@@ -1,6 +1,19 @@
 import os
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import base64
 from typing import Optional, List
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from cryptography.fernet import Fernet
+
+INSECURE_PLACEHOLDERS = {
+    "supersecretjwtkeyforvoiceagentplatformdevelopment123456789",
+    "dGhpcy1pcy1hLTMyLWJ5dGUtYmFzZTY0LWtleS0xMjM0NTY=",
+    "generate_with_openssl_rand_hex_32",
+    "generate_with_fernet_generate_key_base64",
+    "changeme",
+    "secret",
+    "placeholder"
+}
 
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
@@ -17,31 +30,69 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3001",
     ]
 
-    # Security & JWT
-    JWT_SECRET_KEY: str = "supersecretjwtkeyforvoiceagentplatformdevelopment123456789"
+    # Security & JWT - No hardcoded fallback, strict validation against placeholders
+    JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
-    # Fernet 32-byte base64 encryption key for at-rest API key vault
-    ENCRYPTION_SECRET_KEY: str = "dGhpcy1pcy1hLTMyLWJ5dGUtYmFzZTY0LWtleS0xMjM0NTY="
+
+    # Secret Encryption Key (Fernet key) - No hardcoded fallback
+    ENCRYPTION_SECRET_KEY: str
 
     # Database & Redis
-    # Uses SQLite async fallback if PostgreSQL is unavailable locally
     DATABASE_URL: str = "sqlite+aiosqlite:///./voiceagent.db"
-    REDIS_URL: str = "redis://redis:6379/0"
+    REDIS_URL: str = "redis://localhost:6379/0"
 
-    # AI Defaults
+    # AI Defaults (Active current models only)
     DEFAULT_LLM_PROVIDER: str = "gemini"
+    DEFAULT_GEMINI_MODEL: str = "gemini-2.5-flash"
+    DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
 
+    # Context window & token management
+    CONTEXT_WINDOW_TURNS: int = 6
+    CONTEXT_TOKEN_BUDGET: int = 2000
+
+    # Speech Defaults
     DEFAULT_STT_PROVIDER: str = "faster-whisper"
     DEFAULT_TTS_PROVIDER: str = "edge-tts"
     DEFAULT_TTS_VOICE: str = "en-US-GuyNeural"
 
-    # Single Unified Embedding Model: Gemini text-embedding-004 (768 dimensions)
+    # Current Gemini Embedding model (768-dim output)
     RAG_EMBEDDING_MODEL: str = "text-embedding-004"
     RAG_EMBEDDING_DIM: int = 768
     UPLOAD_STORAGE_DIR: str = "./uploads"
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def validate_jwt_secret(cls, v: str) -> str:
+        if not v or v.strip().lower() in INSECURE_PLACEHOLDERS:
+            raise RuntimeError(
+                "Critical Security Error: JWT_SECRET_KEY is missing or set to an insecure placeholder. "
+                "Provide a secure key with at least 32 characters in .env."
+            )
+        if len(v.strip()) < 32:
+            raise RuntimeError(
+                "Critical Security Error: JWT_SECRET_KEY must be at least 32 characters."
+            )
+        return v.strip()
+
+    @field_validator("ENCRYPTION_SECRET_KEY")
+    @classmethod
+    def validate_encryption_secret(cls, v: str) -> str:
+        if not v or v.strip().lower() in INSECURE_PLACEHOLDERS:
+            raise RuntimeError(
+                "Critical Security Error: ENCRYPTION_SECRET_KEY is missing or set to an insecure placeholder. "
+                "Provide a valid 32-byte base64 Fernet key in .env."
+            )
+        # Validate that it is a valid base64 key for Fernet
+        try:
+            Fernet(v.strip().encode())
+        except Exception as e:
+            raise RuntimeError(
+                f"Critical Security Error: ENCRYPTION_SECRET_KEY is not a valid Fernet key: {e}"
+            )
+        return v.strip()
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -49,4 +100,8 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-settings = Settings()
+try:
+    settings = Settings()
+except Exception as e:
+    # Raise clear error if configuration fails at startup
+    raise RuntimeError(f"Startup configuration error: {e}") from e

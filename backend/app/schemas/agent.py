@@ -3,6 +3,20 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
+SUPPORTED_GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+SUPPORTED_OPENAI_MODELS = [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "o1-mini",
+    "o1",
+]
+
 def slugify(text: str) -> str:
     text = text.lower().strip()
     text = re.sub(r'[^\w\s-]', '', text)
@@ -30,6 +44,11 @@ class AgentBase(BaseModel):
         if v is not None and not re.match(r'^[a-z0-9-]+$', v):
             raise ValueError("Slug must contain only lowercase alphanumeric characters and hyphens")
         return v
+
+    @field_validator("llm_model")
+    def validate_llm_model(cls, v, values):
+        # Allow any supported active model or custom model
+        return v.strip()
 
 class AgentCreate(AgentBase):
     pass
