@@ -1,6 +1,6 @@
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
+from typing import Optional, List
 
 class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
@@ -8,14 +8,25 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Voice Agent Development & Deployment Platform"
     API_V1_PREFIX: str = "/api/v1"
 
-    # Security
+    # Frontend URLs & CORS
+    FRONTEND_URL: str = "http://localhost:3001"
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ]
+
+    # Security & JWT
     JWT_SECRET_KEY: str = "supersecretjwtkeyforvoiceagentplatformdevelopment123456789"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    # Fernet 32-byte base64 encryption key for at-rest API key vault
     ENCRYPTION_SECRET_KEY: str = "dGhpcy1pcy1hLTMyLWJ5dGUtYmFzZTY0LWtleS0xMjM0NTY="
 
     # Database & Redis
-    DATABASE_URL: str = "postgresql+asyncpg://voiceagent:voiceagent_secret@postgres:5432/voiceagent_db"
+    # Uses SQLite async fallback if PostgreSQL is unavailable locally
+    DATABASE_URL: str = "sqlite+aiosqlite:///./voiceagent.db"
     REDIS_URL: str = "redis://redis:6379/0"
 
     # AI Defaults
@@ -27,10 +38,10 @@ class Settings(BaseSettings):
     DEFAULT_TTS_PROVIDER: str = "edge-tts"
     DEFAULT_TTS_VOICE: str = "en-US-GuyNeural"
 
-    # RAG Settings
+    # Single Unified Embedding Model: Gemini text-embedding-004 (768 dimensions)
     RAG_EMBEDDING_MODEL: str = "text-embedding-004"
     RAG_EMBEDDING_DIM: int = 768
-    UPLOAD_STORAGE_DIR: str = "/app/uploads"
+    UPLOAD_STORAGE_DIR: str = "./uploads"
 
     model_config = SettingsConfigDict(
         env_file=".env",
