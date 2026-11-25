@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+from app.core.database import Base, utc_now
 from app.models.agent import agent_tools
 
 def generate_uuid() -> str:
@@ -20,8 +20,8 @@ class Tool(Base):
     execution_type = Column(String(50), default="mock", nullable=False)  # 'mock', 'webhook', 'built_in'
     webhook_url = Column(String(500), nullable=True)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 
     user = relationship("User", back_populates="tools")
     agents = relationship("Agent", secondary=agent_tools, back_populates="tools")

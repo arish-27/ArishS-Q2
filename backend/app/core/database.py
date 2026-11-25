@@ -1,9 +1,14 @@
 import json
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import TypeDecorator, Text
 from app.core.config import settings
+
+def utc_now() -> datetime:
+    """Returns naive UTC datetime compatible with SQLite and PostgreSQL TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Custom type decorator to support pgvector on PostgreSQL while falling back gracefully on SQLite
 try:

@@ -10,7 +10,11 @@ import app.models  # Load all models
 async def lifespan(app: FastAPI):
     # Ensure database schema is initialized
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            from sqlalchemy import text
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        if conn.dialect.name == "sqlite":
+            await conn.run_sync(Base.metadata.create_all)
     yield
     await engine.dispose()
 

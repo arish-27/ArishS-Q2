@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
-from app.core.database import Base, UniversalVector
+from app.core.database import Base, UniversalVector, utc_now
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())
@@ -17,7 +17,7 @@ class Document(Base):
     file_type = Column(String(20), nullable=False)  # 'pdf', 'docx', 'txt'
     file_size = Column(Integer, nullable=False, default=0)
     status = Column(String(50), default="processing", nullable=False)  # 'processing', 'indexed', 'failed'
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
 
     user = relationship("User", back_populates="documents")
     agent = relationship("Agent", back_populates="documents")
@@ -34,7 +34,7 @@ class DocumentChunk(Base):
     # Fixed 768-dim embeddings for Gemini text-embedding-004
     embedding = Column(UniversalVector(768), nullable=True)
     metadata_json = Column(Text, nullable=True, default="{}")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
 
     document = relationship("Document", back_populates="chunks")
     agent = relationship("Agent", back_populates="chunks")
