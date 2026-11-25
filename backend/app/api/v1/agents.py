@@ -12,8 +12,11 @@ from app.schemas.agent import (
     AgentPublish,
     AgentResponse,
     PublicAgentResponse,
+    SUPPORTED_GEMINI_MODELS,
+    SUPPORTED_OPENAI_MODELS,
     slugify,
 )
+from app.core.config import settings
 from app.api.deps import get_current_user
 
 router = APIRouter()
@@ -87,6 +90,23 @@ async def create_agent(
     await db.commit()
     await db.refresh(agent)
     return agent
+
+@router.get("/catalog/models")
+async def get_model_catalog():
+    """Returns active, non-retired LLM and embedding models supported by the platform."""
+    return {
+        "llm": {
+            "gemini": SUPPORTED_GEMINI_MODELS,
+            "openai": SUPPORTED_OPENAI_MODELS,
+        },
+        "embedding": {
+            "provider": "gemini",
+            "model": settings.RAG_EMBEDDING_MODEL,
+            "dimensions": settings.RAG_EMBEDDING_DIM,
+        },
+        "stt": ["faster-whisper"],
+        "tts": ["edge-tts"],
+    }
 
 @router.get("/public/{slug}", response_model=PublicAgentResponse)
 async def get_public_agent(slug: str, db: AsyncSession = Depends(get_db)):

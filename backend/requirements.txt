@@ -18,8 +18,11 @@ httpx>=0.27.0
 aiofiles>=23.2.1
 
 # Speech / Audio / Voice processing
+faster-whisper>=1.1.0
+webrtcvad-wheels>=2.0.14
 edge-tts>=6.1.10
 numpy>=1.26.0
+websockets>=12.0
 
 # Document processing for RAG
 pypdf>=4.1.0

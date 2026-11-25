@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.api.router import api_router
 from app.core.database import engine, Base
+from app.services.rate_limiter import rate_limiter
 import app.models  # Load all models
 
 @asynccontextmanager
@@ -15,7 +16,9 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         if conn.dialect.name == "sqlite":
             await conn.run_sync(Base.metadata.create_all)
+    await rate_limiter.get_backend_status()
     yield
+    await rate_limiter.close()
     await engine.dispose()
 
 app = FastAPI(

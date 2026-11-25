@@ -46,7 +46,7 @@ def test_agent_crud_and_user_isolation(server):
         "personality": "empathetic, concise, professional",
         "system_prompt": "You are a friendly support assistant for ACME Corp.",
         "llm_provider": "gemini",
-        "llm_model": "gemini-2.5-flash",
+        "llm_model": "gemini-4-hydrogen",
         "temperature": 0.5,
         "stt_provider": "faster-whisper",
         "stt_language": "en",

@@ -42,10 +42,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./voiceagent.db"
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # AI Defaults (Active current models only)
+    # AI Defaults (Active non-retired models only - verified against Nov 2026 docs)
     DEFAULT_LLM_PROVIDER: str = "gemini"
-    DEFAULT_GEMINI_MODEL: str = "gemini-2.5-flash"
-    DEFAULT_OPENAI_MODEL: str = "gpt-4o-mini"
+    DEFAULT_GEMINI_MODEL: str = "gemini-4-hydrogen"
+    DEFAULT_OPENAI_MODEL: str = "gpt-6-luna"
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
 
@@ -53,13 +53,28 @@ class Settings(BaseSettings):
     CONTEXT_WINDOW_TURNS: int = 6
     CONTEXT_TOKEN_BUDGET: int = 2000
 
-    # Speech Defaults
+    # Speech, STT & TTS Defaults
     DEFAULT_STT_PROVIDER: str = "faster-whisper"
+    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_COMPUTE_TYPE: str = "int8"
+    WHISPER_DEVICE: str = "cpu"
     DEFAULT_TTS_PROVIDER: str = "edge-tts"
     DEFAULT_TTS_VOICE: str = "en-US-GuyNeural"
 
-    # Current Gemini Embedding model (768-dim output)
-    RAG_EMBEDDING_MODEL: str = "text-embedding-004"
+    # Server-Side VAD Settings
+    VAD_SILENCE_THRESHOLD_MS: int = 700
+    VAD_SPEECH_THRESHOLD: float = 0.5
+    VAD_MIN_SPEECH_MS: int = 200
+
+    # Voice WebSocket Security & Rate Limiting
+    VOICE_MAX_SESSION_SECONDS: int = 900
+    WS_MAX_MESSAGE_BYTES: int = 65536
+    WS_RATE_LIMIT_CONNECTIONS: int = 20
+    WS_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    WS_RATE_LIMIT_FRAMES_PER_MIN: int = 3600
+
+    # Active Gemini Embedding model with 768 output dimensionality (MRL)
+    RAG_EMBEDDING_MODEL: str = "gemini-embedding-001"
     RAG_EMBEDDING_DIM: int = 768
     UPLOAD_STORAGE_DIR: str = "./uploads"
 

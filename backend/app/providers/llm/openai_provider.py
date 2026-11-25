@@ -16,7 +16,7 @@ class OpenAIProvider(BaseLLMProvider):
     Uses official OpenAI chat completions SSE streaming endpoint.
     """
 
-    DEFAULT_MODEL = "gpt-4o-mini"
+    DEFAULT_MODEL = "gpt-6-luna"
     BASE_URL = "https://api.openai.com/v1/chat/completions"
 
     async def generate_stream(

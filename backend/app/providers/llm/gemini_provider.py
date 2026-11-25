@@ -16,7 +16,7 @@ class GeminiProvider(BaseLLMProvider):
     Uses official Gemini REST SSE streamGenerateContent endpoint.
     """
 
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-4-hydrogen"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
     async def generate_stream(

@@ -17,7 +17,7 @@ export default function KnowledgePage() {
         </div>
         <h1 className="text-3xl font-extrabold text-white tracking-tight">Knowledge Base & RAG Pipeline</h1>
         <p className="text-slate-400 text-sm max-w-lg mx-auto">
-          Upload PDF, DOCX, and TXT documents. Automatic chunking, Gemini text-embedding-004 vectors, and agent-specific pgvector grounding will be available here.
+          Upload PDF, DOCX, and TXT documents. Automatic chunking, Gemini gemini-embedding-001 (768-dim) vectors, and agent-specific pgvector grounding will be available here.
         </p>
       </div>
 

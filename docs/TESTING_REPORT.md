@@ -19,9 +19,8 @@ The platform maintains automated testing across all layers:
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 0** | Repo Scaffolding, Docker, Health APIs, Next.js Build | **PASSED** | `pytest backend/tests -v`, `npm run build` | 2/2 API tests passed (2.09s), Next.js 14 compiled with 0 errors |
 | **Phase 1** | Auth, Security & Agent Management CRUD | **PASSED** | `pytest backend/tests -v`, `npm run build` | 6/6 API tests passed (5.14s), Tenant isolation verified, Next.js 10/10 routes compiled |
-| **Phase 2** | LLM Provider Layer, Streaming Text Chat & Context Management | **PASSED** | `pytest backend/tests -v`, `npm run build` | 10/10 API & unit tests passed (6.49s), Next.js 13/13 routes compiled |
-| **Phase 2** | STT, TTS & Server-Side VAD Pipeline | *Pending* | `pytest backend/tests/test_voice_pipeline.py` | To be executed upon Phase 2 completion |
-| **Phase 3** | LLM Streaming, Turn-Taking & Barge-In | *Pending* | `pytest backend/tests/test_turn_taking.py` | To be executed upon Phase 3 completion |
+| **Phase 2** | LLM Provider Layer, Streaming Text Chat & Context Management | **PASSED** | `pytest backend/tests -v`, `npm run build` | 10/10 API & unit tests passed, Next.js 13/13 routes compiled |
+| **Phase 3 (3A+3B)** | Real-Time Voice Pipeline (WebSocket, AudioWorklet, Silero/WebRTC VAD, faster-whisper, Edge-TTS, Orchestrator, Redis RL) | **PASSED** | `docker compose exec backend pytest tests -v`, `pytest backend/tests -v`, `docker compose run --rm --no-deps frontend npm run build` | 18/18 passed in Docker (PostgreSQL + Redis, 6.33s) & locally (SQLite, 10.23s); Next.js 13/13 routes compiled |
 | **Phase 4** | RAG Knowledge Base & pgvector Retrieval | *Pending* | `pytest backend/tests/test_rag.py` | To be executed upon Phase 4 completion |
 | **Phase 5** | Tools Framework & Sensitive Human-in-Loop Gate | *Pending* | `pytest backend/tests/test_tools.py` | To be executed upon Phase 5 completion |
 | **Phase 6** | Testing Playground & Public Deployment (/a/{slug}) | *Pending* | Playwright / E2E & Component tests | To be executed upon Phase 6 completion |
@@ -133,7 +132,24 @@ The platform maintains automated testing across all layers:
 
 ---
 
-## 4. Evaluation Benchmark Protocol (Scheduled for Phase 7)
+## 6. Phase 3 (3A + 3B) Real-Time Voice Pipeline Verification
+
+### 6.1 Backend & Voice Pipeline Test Execution
+- **Local Host Run (SQLite `voiceagent.db`)**: `$env:PYTHONPATH="backend"; .\.venv\Scripts\pytest backend/tests -v` -> **18 passed in 10.23s**
+- **Docker Container Run (Live PostgreSQL `voiceagent_db` + Redis `redis:6379`)**: `docker compose exec backend pytest tests -v` -> **18 passed in 6.33s**
+- **Key Assertions Verified**:
+  - **Model Catalog & Deprecated Model Rejection**: Retired/deprecated model IDs (`gemini-1.5-flash`, `o1-mini`, etc.) rejected with HTTP 422; active catalog exposed at `/api/v1/agents/catalog/models`; `GeminiEmbeddingProvider` verified using `gemini-embedding-001` with `outputDimensionality=768` and L2 normalization (mocked HTTP).
+  - **Server-Side VAD (`silero-onnx` & `webrtcvad`)**: Verified silence rejection and end-of-utterance segmentation on synthetic speech waveforms.
+  - **Voice Orchestrator State Machine**: Verified `IDLE -> LISTENING -> THINKING -> SPEAKING -> LISTENING`, illegal transition guard (`InvalidStateTransition`), interrupt transition, empty transcript recovery, and per-turn latency persistence (`stt_latency_ms`, `llm_first_token_ms`, `tts_first_audio_ms`, `e2e_latency_ms`).
+  - **WebSocket Auth, Tenant Isolation & Security**: Verified rejection of missing JWT, invalid JWT, cross-user agent access, oversized frame rejection (`> WS_MAX_MESSAGE_BYTES`), rate limiting, and full end-to-end mocked voice turn streaming.
+
+### 6.2 Docker Image Model Cache & Frontend Build
+- **Pre-downloaded Whisper Model**: Verified `WhisperModel('base', device='cpu', compute_type='int8', local_files_only=True)` loaded offline inside `voiceagent_backend` in `2313.4 ms`.
+- **Frontend Production Build**: `docker compose run --rm --no-deps frontend npm run build` compiled 13/13 Next.js routes including `/dashboard/agents/[id]/playground`.
+
+---
+
+## 7. Evaluation Benchmark Protocol (Scheduled for Phase 7)
 
 A dedicated evaluation script (`backend/eval/evaluate_rag.py`) will automatically execute 20 distinct domain questions against a loaded knowledge base document:
 - **Retrieval Hit Rate (RHR)**: Percentage of questions where the gold-standard chunk is present within top-k chunks ($k=3$). Target: $\ge 85\%$.

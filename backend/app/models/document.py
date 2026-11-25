@@ -31,7 +31,7 @@ class DocumentChunk(Base):
     agent_id = Column(String(36), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    # Fixed 768-dim embeddings for Gemini text-embedding-004
+    # Fixed 768-dim embeddings for Gemini gemini-embedding-001 (outputDimensionality=768)
     embedding = Column(UniversalVector(768), nullable=True)
     metadata_json = Column(Text, nullable=True, default="{}")
     created_at = Column(DateTime, default=utc_now)

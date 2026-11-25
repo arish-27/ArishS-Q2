@@ -55,7 +55,7 @@ export default function EditAgentPage() {
   const [personality, setPersonality] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [llmProvider, setLlmProvider] = useState('gemini');
-  const [llmModel, setLlmModel] = useState('gemini-2.5-flash');
+  const [llmModel, setLlmModel] = useState('gemini-4-hydrogen');
   const [temperature, setTemperature] = useState(0.7);
   const [sttProvider, setSttProvider] = useState('faster-whisper');
   const [sttLanguage, setSttLanguage] = useState('en');
@@ -467,7 +467,7 @@ export default function EditAgentPage() {
                     value={llmProvider}
                     onChange={(e) => {
                       setLlmProvider(e.target.value);
-                      setLlmModel(e.target.value === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o-mini');
+                      setLlmModel(e.target.value === 'gemini' ? 'gemini-4-hydrogen' : 'gpt-6-luna');
                     }}
                     className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-white text-sm focus:outline-none focus:border-emerald-500"
                   >
@@ -487,17 +487,18 @@ export default function EditAgentPage() {
                   >
                     {llmProvider === 'gemini' ? (
                       <>
-                        <option value="gemini-2.5-flash">gemini-2.5-flash (Low-latency reasoning)</option>
-                        <option value="gemini-2.5-pro">gemini-2.5-pro (Advanced reasoning)</option>
-                        <option value="gemini-1.5-flash">gemini-1.5-flash (High speed)</option>
-                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                        <option value="gemini-4-hydrogen">gemini-4-hydrogen (Fast agentic daily driver)</option>
+                        <option value="gemini-4-neon">gemini-4-neon (Frontier balanced)</option>
+                        <option value="gemini-4-carbon">gemini-4-carbon (Highest reasoning)</option>
+                        <option value="gemini-3.8-flash">gemini-3.8-flash (High-speed multimodal)</option>
+                        <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Lowest cost & latency)</option>
                       </>
                     ) : (
                       <>
-                        <option value="gpt-4o-mini">gpt-4o-mini (Fast & economical)</option>
-                        <option value="gpt-4o">gpt-4o (Multimodal flagship)</option>
-                        <option value="o1-mini">o1-mini (Fast reasoning)</option>
-                        <option value="o1">o1 (Full reasoning)</option>
+                        <option value="gpt-6-luna">gpt-6-luna (Fast & cost-efficient)</option>
+                        <option value="gpt-6.1-terra">gpt-6.1-terra (Fast reasoning & workflows)</option>
+                        <option value="gpt-6.2-sol">gpt-6.2-sol (Balanced everyday workhorse)</option>
+                        <option value="gpt-6.2-astra">gpt-6.2-astra (Flagship frontier reasoning)</option>
                       </>
                     )}
                   </select>

@@ -118,7 +118,7 @@ def test_chat_endpoint_streaming_and_isolation(server):
         "name": "Chatbot Alpha",
         "system_prompt": "You are a concise AI.",
         "llm_provider": "gemini",
-        "llm_model": "gemini-2.5-flash"
+        "llm_model": "gemini-4-hydrogen"
     }, token=token_a)
     agent_a = json.loads(agent_raw)
     agent_id = agent_a["id"]
