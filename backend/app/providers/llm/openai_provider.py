@@ -1,8 +1,10 @@
 import json
 import httpx
-from typing import AsyncIterator, List, Dict
+from typing import AsyncIterator, List, Dict, Any
 from app.providers.llm.base import (
     BaseLLMProvider,
+    ToolCallRequest,
+    ToolTurnResult,
     LLMProviderError,
     LLMAuthenticationError,
     LLMRateLimitError,
@@ -97,3 +99,86 @@ class OpenAIProvider(BaseLLMProvider):
         except Exception as e:
             logger.error(f"Unexpected OpenAI provider error: {e}")
             raise LLMProviderError(f"OpenAI error: {str(e)}") from e
+
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        model: str = "",
+    ) -> ToolTurnResult:
+        """Executes a single OpenAI chat completion turn with tool definitions."""
+        target_model = model or self.DEFAULT_MODEL
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        formatted: List[Dict[str, Any]] = []
+        if system_prompt:
+            formatted.append({"role": "system", "content": system_prompt})
+        for msg in messages:
+            role = msg.get("role", "user")
+            if role == "tool":
+                formatted.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id", "call_0"),
+                    "content": json.dumps(msg.get("content", {})),
+                })
+            elif role == "assistant" and msg.get("tool_calls"):
+                formatted.append({
+                    "role": "assistant",
+                    "content": msg.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": tc.get("id", "call_0"),
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc.get("arguments", {})),
+                            },
+                        }
+                        for tc in msg["tool_calls"]
+                    ],
+                })
+            else:
+                formatted.append({"role": role, "content": str(msg.get("content", ""))})
+
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": formatted,
+            "temperature": max(0.0, min(2.0, temperature)),
+        }
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["parameters"],
+                    },
+                }
+                for t in tools
+            ]
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+            resp = await client.post(self.BASE_URL, headers=headers, json=payload)
+
+        if resp.status_code == 401:
+            raise LLMAuthenticationError("Invalid or unauthorized OpenAI API key.")
+        if resp.status_code == 429:
+            raise LLMRateLimitError("OpenAI API rate limit or quota exceeded.")
+        if resp.status_code != 200:
+            raise LLMProviderError(f"OpenAI API returned HTTP {resp.status_code}")
+
+        msg_obj = resp.json().get("choices", [{}])[0].get("message", {})
+        calls: List[ToolCallRequest] = []
+        for tc in msg_obj.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            calls.append(ToolCallRequest(id=tc.get("id", "call_0"), name=fn.get("name", ""), arguments=args))
+        return ToolTurnResult(text=(msg_obj.get("content") or "").strip(), tool_calls=calls)

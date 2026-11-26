@@ -48,6 +48,19 @@ interface RagSourceItem {
   chunk_index: number;
 }
 
+interface ToolCallLog {
+  name: string;
+  arguments: Record<string, unknown>;
+  result: Record<string, unknown>;
+  duration_ms: number;
+}
+
+interface PendingConfirm {
+  confirm_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+}
+
 interface DebugEvent {
   id: string;
   time: string;
@@ -92,6 +105,8 @@ export default function VoicePlaygroundPage() {
   // Transcripts & debug logs
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
   const [ragSources, setRagSources] = useState<RagSourceItem[]>([]);
+  const [toolCalls, setToolCalls] = useState<ToolCallLog[]>([]);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [debugLogs, setDebugLogs] = useState<DebugEvent[]>([]);
   const [showDebug, setShowDebug] = useState(true);
 
@@ -373,6 +388,35 @@ export default function VoicePlaygroundPage() {
               );
               break;
 
+            case 'tool_confirm':
+              setPendingConfirm({
+                confirm_id: msg.confirm_id,
+                tool_name: msg.tool_name,
+                arguments: msg.arguments || {},
+              });
+              pushDebug('tool_confirm', `Awaiting confirmation for ${msg.tool_name}`);
+              break;
+
+            case 'tool_call': {
+              const tc: ToolCallLog = {
+                name: msg.name,
+                arguments: msg.arguments || {},
+                result: msg.result || {},
+                duration_ms: msg.duration_ms || 0,
+              };
+              setToolCalls((prev) => [tc, ...prev.slice(0, 19)]);
+              setTranscripts((prev) => [
+                ...prev,
+                {
+                  id: `tool-${Date.now()}-${Math.random()}`,
+                  role: 'assistant',
+                  text: `Tool: ${tc.name}(${JSON.stringify(tc.arguments)}) -> ${JSON.stringify(tc.result)}`,
+                },
+              ]);
+              pushDebug('tool_call', `${tc.name} (${tc.duration_ms}ms)`);
+              break;
+            }
+
             case 'turn_metrics': {
               const targetId = activeStreamMsgIdRef.current;
               if (targetId) {
@@ -470,6 +514,21 @@ export default function VoicePlaygroundPage() {
       wsRef.current.send(JSON.stringify({ type: 'config', ...NOISE_PRESETS[level] }));
       pushDebug('config', `Noise sensitivity=${level}`);
     }
+  };
+
+  const sendToolConfirm = (approved: boolean) => {
+    if (!pendingConfirm) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'tool_confirm_response',
+          confirm_id: pendingConfirm.confirm_id,
+          approved,
+        })
+      );
+      pushDebug('tool_confirm_response', `${pendingConfirm.tool_name}: ${approved ? 'confirmed' : 'cancelled'}`);
+    }
+    setPendingConfirm(null);
   };
 
   // Compute running averages
@@ -815,6 +874,23 @@ export default function VoicePlaygroundPage() {
                   ))}
                 </div>
               )}
+              {toolCalls.length > 0 && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold">
+                    Tool Calls ({toolCalls.length})
+                  </span>
+                  {toolCalls.slice(0, 4).map((tc, i) => (
+                    <div key={`${tc.name}-${i}`} className="p-2 rounded-lg bg-slate-950 border border-slate-800 text-[10px] font-mono space-y-0.5">
+                      <div className="flex justify-between">
+                        <span className="text-amber-300 font-bold">{tc.name}</span>
+                        <span className="text-slate-500">{tc.duration_ms}ms</span>
+                      </div>
+                      <div className="text-slate-400 truncate">args: {JSON.stringify(tc.arguments)}</div>
+                      <div className="text-emerald-400 truncate">res: {JSON.stringify(tc.result)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-3 space-y-1.5 font-mono text-[11px]">
@@ -835,6 +911,38 @@ export default function VoicePlaygroundPage() {
           </div>
         )}
       </div>
+
+      {/* Sensitive Tool Confirmation Modal */}
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-amber-500/40 p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2 text-amber-400">
+              <AlertCircle className="w-5 h-5" />
+              <h3 className="text-base font-bold text-white">Confirm Sensitive Tool</h3>
+            </div>
+            <p className="text-sm text-slate-300">
+              The agent wants to execute <code className="text-amber-300 font-mono">{pendingConfirm.tool_name}</code>:
+            </p>
+            <pre className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-emerald-300 overflow-x-auto">
+              {JSON.stringify(pendingConfirm.arguments, null, 2)}
+            </pre>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => sendToolConfirm(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => sendToolConfirm(true)}
+                className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-sm font-semibold"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -7,6 +7,9 @@ import {
   ApiKeyItem,
   KnowledgeDocument,
   RagQueryResponse,
+  ToolItem,
+  BuiltinToolPreset,
+  ToolCreateInput,
 } from '@/types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -278,6 +281,41 @@ class ApiClient {
         similarity_threshold: similarityThreshold,
       }),
     });
+  }
+
+  // Function Tools Endpoints
+  async listBuiltinTools(): Promise<BuiltinToolPreset[]> {
+    return this.request<BuiltinToolPreset[]>('/tools/builtins');
+  }
+
+  async listTools(): Promise<ToolItem[]> {
+    return this.request<ToolItem[]>('/tools');
+  }
+
+  async createTool(data: ToolCreateInput): Promise<ToolItem> {
+    return this.request<ToolItem>('/tools', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateTool(toolId: string, data: Partial<ToolCreateInput>): Promise<ToolItem> {
+    return this.request<ToolItem>(`/tools/${toolId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteTool(toolId: string): Promise<void> {
+    await this.request<void>(`/tools/${toolId}`, { method: 'DELETE' });
+  }
+
+  async assignToolToAgent(toolId: string, agentId: string): Promise<ToolItem> {
+    return this.request<ToolItem>(`/tools/${toolId}/assign/${agentId}`, { method: 'POST' });
+  }
+
+  async unassignToolFromAgent(toolId: string, agentId: string): Promise<ToolItem> {
+    return this.request<ToolItem>(`/tools/${toolId}/assign/${agentId}`, { method: 'DELETE' });
   }
 }
 

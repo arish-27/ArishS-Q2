@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -26,6 +27,7 @@ from app.providers.tts.base import BaseTTSProvider
 from app.services.context_manager import ConversationContextManager
 from app.services.rag_service import retrieve_relevant_chunks
 from app.services.sentence_splitter import StreamingSentenceSplitter
+from app.services.tool_executor import SSRFBlockedError, ToolValidationError, execute_tool
 from app.vad.detector import StreamingVAD
 
 
@@ -94,6 +96,7 @@ class VoiceOrchestrator:
         context_manager: Optional[ConversationContextManager] = None,
         rag_api_key: Optional[str] = None,
         embedding_provider: Optional[BaseEmbeddingProvider] = None,
+        is_public_session: bool = False,
     ):
         self.agent = agent
         self.session_id = session_id
@@ -107,6 +110,7 @@ class VoiceOrchestrator:
         self.context_manager = context_manager or ConversationContextManager(max_turns=6)
         self.rag_api_key = rag_api_key
         self.embedding_provider = embedding_provider
+        self.is_public_session = is_public_session
 
         self._state: VoiceState = VoiceState.IDLE
         self._history: List[Dict[str, str]] = []
@@ -114,6 +118,7 @@ class VoiceOrchestrator:
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._state_lock = asyncio.Lock()
         self._vad_prob_frame_counter: int = 0
+        self._pending_confirmations: Dict[str, asyncio.Future] = {}
 
     @property
     def state(self) -> VoiceState:
@@ -172,8 +177,17 @@ class VoiceOrchestrator:
             await self.send_json({"type": "audio_stop", "reason": "barge_in"})
             await self.transition(VoiceState.LISTENING, reason="barge_in")
 
+    def resolve_tool_confirmation(self, confirm_id: str, approved: bool) -> None:
+        fut = self._pending_confirmations.pop(confirm_id, None)
+        if fut and not fut.done():
+            fut.set_result(approved)
+
     async def cancel_active_turn(self) -> None:
         self._cancel_event.set()
+        for fut in list(self._pending_confirmations.values()):
+            if not fut.done():
+                fut.cancel()
+        self._pending_confirmations.clear()
         if self._turn_task and not self._turn_task.done():
             self._turn_task.cancel()
             try:
@@ -342,10 +356,93 @@ class VoiceOrchestrator:
                 "retry_count": 0,
             }
 
+            executed_tool_calls: List[Dict[str, Any]] = []
+            executed_tool_results: List[Dict[str, Any]] = []
+            direct_tool_final_text: Optional[str] = None
+
+            active_tools = self._get_active_tools()
+            if active_tools:
+                tools_by_name = {t.name: t for t in active_tools}
+                tool_decls = []
+                for t in active_tools:
+                    try:
+                        params = json.loads(t.parameters_schema or "{}")
+                    except json.JSONDecodeError:
+                        params = {"type": "object", "properties": {}}
+                    tool_decls.append({"name": t.name, "description": t.description, "parameters": params})
+
+                working_msgs: List[Dict[str, Any]] = list(prepared_messages)
+                for _ in range(3):
+                    if self._cancel_event.is_set():
+                        return
+                    tool_turn = await self.llm.generate_with_tools(
+                        messages=working_msgs,
+                        tools=tool_decls,
+                        system_prompt=voice_system_prompt,
+                        temperature=self.agent.temperature,
+                        model=self.agent.llm_model,
+                    )
+                    if not tool_turn.tool_calls:
+                        direct_tool_final_text = tool_turn.text
+                        break
+
+                    working_msgs.append({
+                        "role": "assistant",
+                        "content": tool_turn.text or "",
+                        "tool_calls": [
+                            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                            for tc in tool_turn.tool_calls
+                        ],
+                    })
+                    for tc in tool_turn.tool_calls:
+                        if self._cancel_event.is_set():
+                            return
+                        tool_obj = tools_by_name.get(tc.name)
+                        if not tool_obj:
+                            res_payload: Dict[str, Any] = {"error": f"Unknown tool '{tc.name}'"}
+                            dur_ms = 0.0
+                        else:
+                            res_payload, dur_ms = await self._run_single_voice_tool(tool_obj, tc.arguments)
+
+                        executed_tool_calls.append({"name": tc.name, "arguments": tc.arguments})
+                        executed_tool_results.append({"name": tc.name, "result": res_payload, "duration_ms": dur_ms})
+                        await self.send_json({
+                            "type": "tool_call",
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                            "result": res_payload,
+                            "duration_ms": dur_ms,
+                        })
+                        working_msgs.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": res_payload,
+                        })
+
             # 2. Concurrent LLM producer & TTS consumer
             async def llm_producer() -> None:
                 llm_start = time.perf_counter()
                 splitter = StreamingSentenceSplitter()
+
+                if direct_tool_final_text is not None:
+                    try:
+                        if direct_tool_final_text:
+                            timings["llm_first_token_ms"] = 1.0
+                            collected_tokens.append(direct_tool_final_text)
+                            await self.send_json({"type": "llm_token", "token": direct_tool_final_text})
+                            for sentence in splitter.feed(direct_tool_final_text):
+                                if timings["first_sentence_queued_perf"] is None:
+                                    timings["first_sentence_queued_perf"] = time.perf_counter()
+                                await sentence_queue.put(sentence)
+                            for sentence in splitter.flush():
+                                if timings["first_sentence_queued_perf"] is None:
+                                    timings["first_sentence_queued_perf"] = time.perf_counter()
+                                await sentence_queue.put(sentence)
+                        timings["llm_total_ms"] = (time.perf_counter() - llm_start) * 1000.0
+                    finally:
+                        await sentence_queue.put(None)
+                    return
                 max_transient_retries = 2
                 max_timeout_retries = 1
                 primary_model = self.agent.llm_model
@@ -547,6 +644,8 @@ class VoiceOrchestrator:
                 audio_duration_ms=int(round(audio_duration_ms)),
                 metrics=metrics,
                 rag_sources=rag_sources,
+                tool_calls=executed_tool_calls,
+                tool_results=executed_tool_results,
                 interrupted=False,
             )
 
@@ -674,6 +773,60 @@ class VoiceOrchestrator:
         except Exception as tts_exc:
             logger.warning(f"Fallback TTS playback failed in session {self.session_id}: {tts_exc}")
 
+    def _get_active_tools(self) -> List[Any]:
+        tools = list(getattr(self.agent, "tools", []) or [])
+        if self.is_public_session and not settings.ALLOW_SENSITIVE_TOOLS_IN_PUBLIC:
+            return [t for t in tools if not getattr(t, "is_sensitive", False)]
+        return tools
+
+    async def _run_single_voice_tool(self, tool_obj: Any, raw_args: Dict[str, Any]) -> tuple[Dict[str, Any], float]:
+        from app.services.tool_executor import validate_tool_arguments
+
+        try:
+            validate_tool_arguments(tool_obj.parameters_schema, raw_args)
+        except ToolValidationError as exc:
+            return {"error": f"Invalid arguments: {exc}"}, 0.0
+
+        if getattr(tool_obj, "is_sensitive", False):
+            confirm_id = str(uuid.uuid4())
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future = loop.create_future()
+            self._pending_confirmations[confirm_id] = fut
+
+            await self.send_json({
+                "type": "tool_confirm",
+                "confirm_id": confirm_id,
+                "tool_name": tool_obj.name,
+                "arguments": raw_args,
+            })
+            spoken_prompt = f"Should I go ahead and run {tool_obj.name.replace('_', ' ')}?"
+            await self._speak_fallback_line(spoken_prompt)
+
+            try:
+                approved = await asyncio.wait_for(fut, timeout=settings.TOOL_CONFIRM_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                self._pending_confirmations.pop(confirm_id, None)
+                return {"error": "User confirmation timed out after 30 seconds.", "declined": True}, 0.0
+            except asyncio.CancelledError:
+                self._pending_confirmations.pop(confirm_id, None)
+                raise
+
+            if not approved:
+                return {"error": "User declined to execute sensitive tool.", "declined": True}, 0.0
+
+        # Non-sensitive or confirmed: speak short filler while executing
+        filler_task = asyncio.create_task(self._speak_fallback_line("Let me check that for you."))
+        try:
+            result, dur_ms = await execute_tool(tool_obj, raw_args)
+            await filler_task
+            return result, dur_ms
+        except (ToolValidationError, SSRFBlockedError) as exc:
+            await filler_task
+            return {"error": str(exc)}, 0.0
+        except Exception as exc:
+            await filler_task
+            return {"error": f"Tool execution error: {exc}"}, 0.0
+
     async def _persist_turn(
         self,
         user_text: str,
@@ -681,6 +834,8 @@ class VoiceOrchestrator:
         audio_duration_ms: int,
         metrics: TurnLatencyMetrics,
         rag_sources: Optional[List[Dict[str, Any]]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        tool_results: Optional[List[Dict[str, Any]]] = None,
         interrupted: bool = False,
     ) -> None:
         """Persists both user and assistant messages plus latency metrics to PostgreSQL/SQLite."""
@@ -703,6 +858,8 @@ class VoiceOrchestrator:
                 tts_latency_ms=metrics.tts_total_ms,
                 e2e_latency_ms=metrics.e2e_latency_ms,
                 rag_sources_json=json.dumps(rag_sources) if rag_sources else None,
+                tool_calls_json=json.dumps(tool_calls) if tool_calls else None,
+                tool_results_json=json.dumps(tool_results) if tool_results else None,
                 interrupted=interrupted,
             )
             db.add(user_msg)

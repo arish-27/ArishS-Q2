@@ -22,6 +22,7 @@ from app.providers.llm import (
     LLMTimeoutError
 )
 from app.services.context_manager import ConversationContextManager
+from app.services.tool_executor import ToolValidationError, SSRFBlockedError, execute_tool
 
 router = APIRouter()
 
@@ -152,30 +153,104 @@ async def chat_with_agent(
     )
 
     # 6. Stream SSE generator
+    agent_tools_list = list(getattr(agent, "tools", []) or [])
+    tools_by_name = {t.name: t for t in agent_tools_list}
+    tool_decls = []
+    for t in agent_tools_list:
+        try:
+            params = json.loads(t.parameters_schema or "{}")
+        except json.JSONDecodeError:
+            params = {"type": "object", "properties": {}}
+        tool_decls.append({"name": t.name, "description": t.description, "parameters": params})
+
     async def event_generator():
         start_time = time.time()
         first_token_time: Optional[float] = None
         collected_tokens = []
+        executed_tool_calls = []
+        executed_tool_results = []
 
         try:
-            async for token in llm.generate_stream(
-                messages=prepared_messages,
-                system_prompt=agent.system_prompt,
-                temperature=agent.temperature,
-                model=agent.llm_model
-            ):
-                if first_token_time is None:
-                    first_token_time = time.time()
-                    ft_latency = (first_token_time - start_time) * 1000.0
-                    meta_event = {
-                        "type": "first_token",
-                        "latency_ms": round(ft_latency, 1)
-                    }
-                    yield f"event: first_token\ndata: {json.dumps(meta_event)}\n\n"
+            working_messages = list(prepared_messages)
+            final_text_from_tool_turn: Optional[str] = None
 
-                collected_tokens.append(token)
-                token_event = {"token": token}
-                yield f"event: token\ndata: {json.dumps(token_event)}\n\n"
+            if tool_decls:
+                for _ in range(3):
+                    turn_res = await llm.generate_with_tools(
+                        messages=working_messages,
+                        tools=tool_decls,
+                        system_prompt=agent.system_prompt,
+                        temperature=agent.temperature,
+                        model=agent.llm_model,
+                    )
+                    if not turn_res.tool_calls:
+                        final_text_from_tool_turn = turn_res.text
+                        break
+
+                    working_messages.append({
+                        "role": "assistant",
+                        "content": turn_res.text or "",
+                        "tool_calls": [
+                            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                            for tc in turn_res.tool_calls
+                        ],
+                    })
+
+                    for tc in turn_res.tool_calls:
+                        tool_obj = tools_by_name.get(tc.name)
+                        if not tool_obj:
+                            res_payload = {"error": f"Unknown tool '{tc.name}'"}
+                            dur_ms = 0.0
+                        elif tool_obj.is_sensitive:
+                            res_payload = {
+                                "error": f"Tool '{tc.name}' is marked sensitive and requires voice confirmation."
+                            }
+                            dur_ms = 0.0
+                        else:
+                            try:
+                                res_payload, dur_ms = await execute_tool(tool_obj, tc.arguments)
+                            except (ToolValidationError, SSRFBlockedError) as exc:
+                                res_payload = {"error": str(exc)}
+                                dur_ms = 0.0
+                            except Exception as exc:
+                                res_payload = {"error": f"Tool execution error: {exc}"}
+                                dur_ms = 0.0
+
+                        executed_tool_calls.append({"name": tc.name, "arguments": tc.arguments})
+                        executed_tool_results.append({"name": tc.name, "result": res_payload, "duration_ms": dur_ms})
+                        yield f"event: tool_call\ndata: {json.dumps({'name': tc.name, 'arguments': tc.arguments, 'result': res_payload, 'duration_ms': dur_ms})}\n\n"
+                        working_messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": res_payload})
+
+            if final_text_from_tool_turn is not None:
+                first_token_time = time.time()
+                ft_latency = (first_token_time - start_time) * 1000.0
+                yield f"event: first_token\ndata: {json.dumps({'type': 'first_token', 'latency_ms': round(ft_latency, 1)})}\n\n"
+                collected_tokens.append(final_text_from_tool_turn)
+                yield f"event: token\ndata: {json.dumps({'token': final_text_from_tool_turn})}\n\n"
+            else:
+                stream_msgs = [
+                    {"role": m["role"], "content": json.dumps(m["content"]) if isinstance(m.get("content"), dict) else str(m.get("content", ""))}
+                    for m in working_messages
+                    if m.get("role") in ("user", "assistant", "system")
+                ]
+                async for token in llm.generate_stream(
+                    messages=stream_msgs,
+                    system_prompt=agent.system_prompt,
+                    temperature=agent.temperature,
+                    model=agent.llm_model
+                ):
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                        ft_latency = (first_token_time - start_time) * 1000.0
+                        meta_event = {
+                            "type": "first_token",
+                            "latency_ms": round(ft_latency, 1)
+                        }
+                        yield f"event: first_token\ndata: {json.dumps(meta_event)}\n\n"
+
+                    collected_tokens.append(token)
+                    token_event = {"token": token}
+                    yield f"event: token\ndata: {json.dumps(token_event)}\n\n"
 
             end_time = time.time()
             total_latency = (end_time - start_time) * 1000.0
@@ -188,7 +263,9 @@ async def chat_with_agent(
                     session_id=session_id,
                     role="assistant",
                     content=full_response,
-                    llm_latency_ms=round(total_latency, 2)
+                    llm_latency_ms=round(total_latency, 2),
+                    tool_calls_json=json.dumps(executed_tool_calls) if executed_tool_calls else None,
+                    tool_results_json=json.dumps(executed_tool_results) if executed_tool_results else None,
                 )
                 save_db.add(asst_msg)
 

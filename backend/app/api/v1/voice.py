@@ -306,6 +306,11 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
                         "speech_end_threshold": vad.speech_end_threshold,
                         "energy_multiplier": vad.energy_multiplier,
                     })
+                elif action == "tool_confirm_response":
+                    orchestrator.resolve_tool_confirmation(
+                        str(cmd.get("confirm_id") or ""),
+                        bool(cmd.get("approved", False)),
+                    )
                 elif action == "ping":
                     await safe_send_json({"type": "pong"})
 

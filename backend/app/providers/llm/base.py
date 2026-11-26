@@ -1,5 +1,19 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import AsyncIterator, List, Dict, Any, Optional
+
+
+@dataclass
+class ToolCallRequest:
+    id: str
+    name: str
+    arguments: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ToolTurnResult:
+    text: str = ""
+    tool_calls: List[ToolCallRequest] = field(default_factory=list)
 
 class LLMProviderError(Exception):
     """Base exception for LLM provider errors."""
@@ -58,3 +72,23 @@ class BaseLLMProvider(ABC):
         async for token in self.generate_stream(messages, system_prompt, temperature, model):
             tokens.append(token)
         return "".join(tokens)
+
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        model: str = "",
+    ) -> ToolTurnResult:
+        """
+        Single non-streaming turn with function/tool declarations.
+        Subclasses override with native Gemini/OpenAI tool calling; default falls back to text.
+        """
+        simple_msgs = [
+            {"role": m.get("role", "user"), "content": str(m.get("content", ""))}
+            for m in messages
+            if m.get("content")
+        ]
+        txt = await self.generate(simple_msgs, system_prompt=system_prompt, temperature=temperature, model=model)
+        return ToolTurnResult(text=txt, tool_calls=[])

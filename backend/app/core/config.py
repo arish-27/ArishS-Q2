@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     WS_RATE_LIMIT_CONNECTIONS: int = 20
     WS_RATE_LIMIT_WINDOW_SECONDS: int = 60
     WS_RATE_LIMIT_FRAMES_PER_MIN: int = 3600
+    TOOL_CONFIRM_TIMEOUT_S: float = 30.0
+    ALLOW_SENSITIVE_TOOLS_IN_PUBLIC: bool = False
+    PUBLIC_MAX_SESSIONS_PER_HOUR_PER_IP: int = 20
 
     # Active Gemini Embedding model with 768 output dimensionality (MRL)
     RAG_EMBEDDING_MODEL: str = "gemini-embedding-001"

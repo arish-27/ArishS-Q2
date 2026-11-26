@@ -2,9 +2,11 @@ import asyncio
 import json
 import time
 import httpx
-from typing import AsyncIterator, List, Dict, Optional
+from typing import AsyncIterator, List, Dict, Optional, Any
 from app.providers.llm.base import (
     BaseLLMProvider,
+    ToolCallRequest,
+    ToolTurnResult,
     LLMProviderError,
     LLMAuthenticationError,
     LLMRateLimitError,
@@ -165,3 +167,107 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             logger.error(f"Unexpected Gemini provider error: {e}")
             raise LLMProviderError(f"Gemini error: {str(e)}") from e
+
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        model: str = "",
+    ) -> ToolTurnResult:
+        """Executes a single Gemini generateContent turn with functionDeclarations."""
+        target_model = model or self.DEFAULT_MODEL
+        url = f"{self.BASE_URL}/{target_model}:generateContent?key={self.api_key}"
+
+        contents: List[Dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            if role == "tool":
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": msg.get("name", "tool"),
+                            "response": {"result": msg.get("content", {})},
+                        }
+                    }],
+                })
+            elif role == "assistant" and msg.get("tool_calls"):
+                parts = []
+                if msg.get("content"):
+                    parts.append({"text": str(msg["content"])})
+                for tc in msg["tool_calls"]:
+                    parts.append({
+                        "functionCall": {
+                            "name": tc["name"],
+                            "args": tc.get("arguments", {}),
+                        }
+                    })
+                contents.append({"role": "model", "parts": parts})
+            else:
+                gem_role = "model" if role == "assistant" else "user"
+                contents.append({"role": gem_role, "parts": [{"text": str(msg.get("content", ""))}]})
+
+        generation_config: Dict[str, Any] = {
+            "temperature": max(0.0, min(2.0, temperature)),
+        }
+        if self.max_output_tokens is not None:
+            generation_config["maxOutputTokens"] = self.max_output_tokens
+        if self.thinking_level:
+            generation_config["thinkingConfig"] = {"thinkingLevel": self.thinking_level}
+
+        payload: Dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": generation_config,
+        }
+        if system_prompt:
+            payload["system_instruction"] = {"parts": [{"text": system_prompt}]}
+        if tools:
+            payload["tools"] = [{
+                "functionDeclarations": [
+                    {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["parameters"],
+                    }
+                    for t in tools
+                ]
+            }]
+
+        client = get_gemini_http_client()
+        try:
+            resp = await client.post(url, json=payload)
+        except httpx.TimeoutException as e:
+            raise LLMTimeoutError("Gemini tool-calling request timed out.") from e
+
+        if resp.status_code in (401, 403):
+            raise LLMAuthenticationError("Invalid or unauthorized Gemini API key.")
+        if resp.status_code == 429:
+            raise LLMRateLimitError("Gemini API quota or rate limit exceeded.")
+        if resp.status_code in (502, 503, 504):
+            raise LLMServiceUnavailableError(f"Gemini API temporarily unavailable (HTTP {resp.status_code}).")
+        if resp.status_code != 200:
+            raise LLMProviderError(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
+
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return ToolTurnResult(text="", tool_calls=[])
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        texts: List[str] = []
+        calls: List[ToolCallRequest] = []
+        for idx, part in enumerate(parts):
+            if "text" in part and part["text"]:
+                texts.append(part["text"])
+            if "functionCall" in part:
+                fc = part["functionCall"]
+                calls.append(
+                    ToolCallRequest(
+                        id=f"call_{idx}_{fc.get('name', 'tool')}",
+                        name=fc.get("name", ""),
+                        arguments=fc.get("args", {}) or {},
+                    )
+                )
+        return ToolTurnResult(text="".join(texts).strip(), tool_calls=calls)

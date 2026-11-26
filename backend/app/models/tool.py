@@ -19,6 +19,9 @@ class Tool(Base):
     is_sensitive = Column(Boolean, default=False, nullable=False)   # Human/voice confirmation required
     execution_type = Column(String(50), default="mock", nullable=False)  # 'mock', 'webhook', 'built_in'
     webhook_url = Column(String(500), nullable=True)
+    webhook_method = Column(String(10), default="POST", nullable=True)
+    webhook_headers = Column(Text, nullable=True, default="{}")
+    webhook_body_template = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

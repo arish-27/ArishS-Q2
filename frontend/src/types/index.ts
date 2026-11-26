@@ -98,3 +98,40 @@ export interface RagQueryResponse {
   query: string;
   results: RagChunkResult[];
 }
+
+export interface ToolItem {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string;
+  parameters_schema: string;
+  is_sensitive: boolean;
+  execution_type: 'mock' | 'webhook' | 'built_in';
+  webhook_url?: string | null;
+  webhook_method?: string;
+  webhook_headers?: string;
+  webhook_body_template?: string | null;
+  agent_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BuiltinToolPreset {
+  name: string;
+  description: string;
+  parameters_schema: string;
+  is_sensitive: boolean;
+  execution_type: 'built_in';
+}
+
+export interface ToolCreateInput {
+  name: string;
+  description: string;
+  parameters_schema: string;
+  is_sensitive: boolean;
+  execution_type: 'mock' | 'webhook' | 'built_in';
+  webhook_url?: string;
+  webhook_method?: string;
+  webhook_headers?: string;
+  webhook_body_template?: string;
+}
