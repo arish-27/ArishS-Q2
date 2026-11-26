@@ -265,6 +265,23 @@ class VoiceOrchestrator:
         }
 
         try:
+            # 0. For public anonymous sessions, verify agent is still published & active before each turn
+            if self.is_public_session:
+                async with self.db_session_factory() as pub_db:
+                    pub_row = (
+                        await pub_db.execute(
+                            select(Agent.is_published, Agent.is_active).where(Agent.id == self.agent.id)
+                        )
+                    ).first()
+                    if not pub_row or not pub_row[0] or not pub_row[1]:
+                        await self.send_json({
+                            "type": "error",
+                            "code": "AGENT_UNPUBLISHED",
+                            "message": "Agent is no longer published or active.",
+                        })
+                        await self.stop_listening()
+                        return
+
             # 1. Speech-to-Text
             stt_result = await self.stt.transcribe(
                 utterance_pcm16,
