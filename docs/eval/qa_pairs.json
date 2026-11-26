@@ -1,0 +1,31 @@
+{
+  "in_knowledge": [
+    {"id": 1, "question": "When was AetherGrid Robotics founded and by whom?", "expected_keywords": ["2021", "Kavya Menon", "Rohan Kulkarni"], "expected_chunk_hint": "founded in March 2021"},
+    {"id": 2, "question": "Where is AetherGrid Robotics headquarters located?", "expected_keywords": ["Indiranagar", "Bengaluru"], "expected_chunk_hint": "Indiranagar, Bengaluru"},
+    {"id": 3, "question": "Which European city has an AetherGrid logistics depot?", "expected_keywords": ["Rotterdam"], "expected_chunk_hint": "Rotterdam"},
+    {"id": 4, "question": "What is the payload capacity and battery runtime of Rover-S1?", "expected_keywords": ["35 kg", "10 hours"], "expected_chunk_hint": "Rover-S1"},
+    {"id": 5, "question": "How much does Rover-S1 cost on the RaaS monthly plan?", "expected_keywords": ["490"], "expected_chunk_hint": "$490/month"},
+    {"id": 6, "question": "What is the payload capacity of Titan-M4?", "expected_keywords": ["450 kg"], "expected_chunk_hint": "Titan-M4"},
+    {"id": 7, "question": "How much is the FleetOS Enterprise License per warehouse site?", "expected_keywords": ["2,200"], "expected_chunk_hint": "FleetOS Enterprise"},
+    {"id": 8, "question": "How much do additional robot seats cost in FleetOS beyond 50 robots?", "expected_keywords": ["35"], "expected_chunk_hint": "$35/robot/month"},
+    {"id": 9, "question": "How long is the standard hardware warranty on new robots?", "expected_keywords": ["24-month", "24 months"], "expected_chunk_hint": "24-month hardware warranty"},
+    {"id": 10, "question": "What is the warranty on robot batteries?", "expected_keywords": ["12-month", "1,500"], "expected_chunk_hint": "12-month or 1,500-cycle"},
+    {"id": 11, "question": "What uptime does the Enterprise SLA guarantee?", "expected_keywords": ["99.95%"], "expected_chunk_hint": "99.95%"},
+    {"id": 12, "question": "What is the service credit if unscheduled downtime exceeds the SLA?", "expected_keywords": ["10%"], "expected_chunk_hint": "10% monthly service credit"},
+    {"id": 13, "question": "Within how many days can unopened hardware purchases be returned?", "expected_keywords": ["30"], "expected_chunk_hint": "30 calendar days"},
+    {"id": 14, "question": "How many business days does it take to process approved refunds?", "expected_keywords": ["7 business days"], "expected_chunk_hint": "7 business days"},
+    {"id": 15, "question": "What is the emergency hotline for P1 fleet-halt incidents?", "expected_keywords": ["+91-80-4090-7788"], "expected_chunk_hint": "+91-80-4090-7788"},
+    {"id": 16, "question": "What are the live support hours in IST?", "expected_keywords": ["07:00", "22:00", "IST"], "expected_chunk_hint": "07:00 to 22:00 IST"},
+    {"id": 17, "question": "Which security certifications did AetherGrid achieve in 2025?", "expected_keywords": ["SOC 2", "ISO"], "expected_chunk_hint": "SOC 2 Type II"},
+    {"id": 18, "question": "What encryption does FleetOS use at rest?", "expected_keywords": ["AES-256"], "expected_chunk_hint": "AES-256-GCM"},
+    {"id": 19, "question": "How long does it take for certified partners to receive sandbox credentials?", "expected_keywords": ["2 business days"], "expected_chunk_hint": "2 business days"},
+    {"id": 20, "question": "What is the production REST API rate limit per tenant key?", "expected_keywords": ["600"], "expected_chunk_hint": "600 requests per minute"}
+  ],
+  "out_of_knowledge": [
+    {"id": 21, "question": "What is the stock ticker symbol of AetherGrid Robotics on the NSE?"},
+    {"id": 22, "question": "Who won the 2025 Formula 1 World Championship?"},
+    {"id": 23, "question": "What is the secret Wi-Fi password for the Austin office?"},
+    {"id": 24, "question": "Does AetherGrid offer a flying drone model called SkyBot-X9?"},
+    {"id": 25, "question": "What was AetherGrid's exact net profit in Q3 2025?"}
+  ]
+}
