@@ -32,6 +32,7 @@ interface TranscriptItem {
   role: 'user' | 'assistant';
   text: string;
   streaming?: boolean;
+  interrupted?: boolean;
   metrics?: {
     stt_latency_ms?: number;
     llm_first_token_ms?: number;
@@ -39,6 +40,12 @@ interface TranscriptItem {
     e2e_latency_ms?: number;
     audio_duration_ms?: number;
   };
+}
+
+interface RagSourceItem {
+  file: string;
+  score: number;
+  chunk_index: number;
 }
 
 interface DebugEvent {
@@ -76,6 +83,7 @@ export default function VoicePlaygroundPage() {
 
   // Transcripts & debug logs
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
+  const [ragSources, setRagSources] = useState<RagSourceItem[]>([]);
   const [debugLogs, setDebugLogs] = useState<DebugEvent[]>([]);
   const [showDebug, setShowDebug] = useState(true);
 
@@ -324,6 +332,27 @@ export default function VoicePlaygroundPage() {
               sentenceChunksRef.current = [];
               activeStreamMsgIdRef.current = null;
               pushDebug('audio_stop', msg.reason || 'stopped');
+              break;
+
+            case 'interrupt':
+              playerRef.current?.stopAndClear();
+              sentenceChunksRef.current = [];
+              if (activeStreamMsgIdRef.current) {
+                const intId = activeStreamMsgIdRef.current;
+                setTranscripts((prev) =>
+                  prev.map((m) => (m.id === intId ? { ...m, streaming: false, interrupted: true } : m))
+                );
+                activeStreamMsgIdRef.current = null;
+              }
+              pushDebug('interrupt', msg.reason || 'barge_in');
+              break;
+
+            case 'rag_sources':
+              setRagSources(Array.isArray(msg.sources) ? msg.sources : []);
+              pushDebug(
+                'rag_sources',
+                (msg.sources || []).map((s: RagSourceItem) => `${s.file} (${s.score})`).join(', ') || 'none'
+              );
               break;
 
             case 'turn_metrics': {
@@ -656,6 +685,11 @@ export default function VoicePlaygroundPage() {
                       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider opacity-70 mb-1">
                         {item.role === 'user' ? <Mic className="w-3 h-3" /> : <Bot className="w-3 h-3" />}
                         <span>{item.role}</span>
+                        {item.interrupted && (
+                          <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-semibold">
+                            interrupted
+                          </span>
+                        )}
                       </div>
                       <p className="whitespace-pre-wrap">{item.text}</p>
                     </div>
@@ -711,6 +745,19 @@ export default function VoicePlaygroundPage() {
                   {runtimeInfo.maxSessionSeconds ? `${runtimeInfo.maxSessionSeconds}s` : '900s'}
                 </span>
               </div>
+              {ragSources.length > 0 && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                  <span className="text-[10px] uppercase tracking-wider text-sky-400 font-semibold">
+                    Last RAG Sources
+                  </span>
+                  {ragSources.map((src, i) => (
+                    <div key={`${src.file}-${src.chunk_index}-${i}`} className="flex justify-between text-[11px] font-mono">
+                      <span className="text-slate-300 truncate max-w-[180px]">{src.file} #{src.chunk_index}</span>
+                      <span className="text-emerald-400">{src.score.toFixed(3)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-3 space-y-1.5 font-mono text-[11px]">

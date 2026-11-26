@@ -72,3 +72,29 @@ export interface ApiKeyItem {
   created_at: string;
   updated_at: string;
 }
+
+export interface KnowledgeDocument {
+  id: string;
+  user_id: string;
+  agent_id?: string | null;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  status: 'processing' | 'indexed' | 'failed' | string;
+  chunk_count: number;
+  created_at: string;
+}
+
+export interface RagChunkResult {
+  document_id: string;
+  filename: string;
+  chunk_index: number;
+  content: string;
+  score: number;
+}
+
+export interface RagQueryResponse {
+  agent_id: string;
+  query: string;
+  results: RagChunkResult[];
+}

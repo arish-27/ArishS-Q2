@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -9,7 +10,9 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal, utc_now
 from app.core.logger import logger
 from app.models.agent import Agent
+from app.models.document import Document
 from app.models.session import CallSession, ConversationMessage
+from app.providers.embeddings.base import BaseEmbeddingProvider
 from app.providers.llm.base import (
     BaseLLMProvider,
     LLMAuthenticationError,
@@ -21,6 +24,7 @@ from app.providers.llm.base import (
 from app.providers.stt.base import BaseSTTProvider
 from app.providers.tts.base import BaseTTSProvider
 from app.services.context_manager import ConversationContextManager
+from app.services.rag_service import retrieve_relevant_chunks
 from app.services.sentence_splitter import StreamingSentenceSplitter
 from app.vad.detector import StreamingVAD
 
@@ -88,6 +92,8 @@ class VoiceOrchestrator:
         send_bytes: SendBytesFn,
         db_session_factory=AsyncSessionLocal,
         context_manager: Optional[ConversationContextManager] = None,
+        rag_api_key: Optional[str] = None,
+        embedding_provider: Optional[BaseEmbeddingProvider] = None,
     ):
         self.agent = agent
         self.session_id = session_id
@@ -99,6 +105,8 @@ class VoiceOrchestrator:
         self.send_bytes = send_bytes
         self.db_session_factory = db_session_factory
         self.context_manager = context_manager or ConversationContextManager(max_turns=6)
+        self.rag_api_key = rag_api_key
+        self.embedding_provider = embedding_provider
 
         self._state: VoiceState = VoiceState.IDLE
         self._history: List[Dict[str, str]] = []
@@ -141,14 +149,27 @@ class VoiceOrchestrator:
 
     async def interrupt(self) -> None:
         """
-        Transition: THINKING|SPEAKING -> LISTENING on user barge-in / manual interrupt.
-        Stops active LLM/TTS tasks immediately so the user can speak cleanly.
+        Transition: THINKING|SPEAKING -> LISTENING on manual interrupt.
+        Stops active LLM/TTS tasks immediately and resets VAD.
         """
         await self.cancel_active_turn()
         self.vad.reset()
         if self._state in (VoiceState.THINKING, VoiceState.SPEAKING):
+            await self.send_json({"type": "interrupt", "reason": "user_interrupted"})
             await self.send_json({"type": "audio_stop", "reason": "interrupted"})
             await self.transition(VoiceState.LISTENING, reason="user_interrupted")
+
+    async def barge_in(self) -> None:
+        """
+        Transition: THINKING|SPEAKING -> LISTENING on VAD-confirmed speech (~250ms debounce).
+        Cancels active LLM/TTS tasks, flushes browser audio queue, and preserves the active
+        VAD speech buffer so the interrupting utterance is captured without clipping.
+        """
+        await self.cancel_active_turn()
+        if self._state in (VoiceState.THINKING, VoiceState.SPEAKING):
+            await self.send_json({"type": "interrupt", "reason": "barge_in"})
+            await self.send_json({"type": "audio_stop", "reason": "barge_in"})
+            await self.transition(VoiceState.LISTENING, reason="barge_in")
 
     async def cancel_active_turn(self) -> None:
         self._cancel_event.set()
@@ -161,11 +182,19 @@ class VoiceOrchestrator:
         self._turn_task = None
 
     async def handle_audio_frame(self, pcm16_bytes: bytes) -> None:
-        """Feeds incoming 16kHz PCM16 audio into server-side VAD while LISTENING."""
-        if self._state != VoiceState.LISTENING:
+        """Feeds incoming 16kHz PCM16 audio into server-side VAD for turn-taking and barge-in."""
+        if self._state == VoiceState.IDLE:
             return
 
         events = self.vad.process_chunk(pcm16_bytes)
+
+        # Barge-in detection while assistant is THINKING or SPEAKING (debounced ~250ms)
+        if self._state in (VoiceState.SPEAKING, VoiceState.THINKING):
+            if self.vad.confirmed_speech_ms >= settings.VAD_BARGE_IN_DEBOUNCE_MS:
+                await self.barge_in()
+                await self.send_json({"type": "vad_speech_start", "barge_in": True})
+            return
+
         for ev in events:
             if ev.speech_start:
                 await self.send_json({"type": "vad_speech_start"})
@@ -198,6 +227,9 @@ class VoiceOrchestrator:
         turn_start = time.perf_counter()
         sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         collected_tokens: List[str] = []
+        rag_sources: List[Dict[str, Any]] = []
+        user_text: Optional[str] = None
+        stt_result: Any = None
 
         # Shared timing holders updated across concurrent LLM producer & TTS consumer
         timings: Dict[str, Optional[float]] = {
@@ -249,7 +281,53 @@ class VoiceOrchestrator:
                 model=self.agent.llm_model,
             )
 
-            voice_system_prompt = f"{self.agent.system_prompt or ''}{VOICE_SYSTEM_PROMPT_ADDENDUM}".strip()
+            # 1b. Fast RAG retrieval when agent has indexed knowledge documents
+            rag_context_block = ""
+            if self.rag_api_key or self.embedding_provider is not None:
+                try:
+                    async with self.db_session_factory() as rag_db:
+                        has_doc = (
+                            await rag_db.execute(
+                                select(Document.id)
+                                .where(Document.agent_id == self.agent.id, Document.status == "indexed")
+                                .limit(1)
+                            )
+                        ).scalar_one_or_none()
+                        if has_doc:
+                            chunks = await retrieve_relevant_chunks(
+                                db=rag_db,
+                                agent_id=self.agent.id,
+                                query=user_text,
+                                api_key=self.rag_api_key or "",
+                                top_k=settings.RAG_TOP_K,
+                                similarity_threshold=settings.RAG_SIMILARITY_THRESHOLD,
+                                embedding_provider=self.embedding_provider,
+                            )
+                            if chunks:
+                                rag_sources = [
+                                    {
+                                        "file": c["filename"],
+                                        "score": c["score"],
+                                        "chunk_index": c["chunk_index"],
+                                    }
+                                    for c in chunks
+                                ]
+                                context_lines = "\n\n".join(
+                                    f"[Source: {c['filename']} (score={c['score']})]\n{c['content']}"
+                                    for c in chunks
+                                )
+                                rag_context_block = (
+                                    "\n\n[Knowledge Base Context]: Use the following retrieved context "
+                                    "to answer the user's question accurately when relevant:\n"
+                                    f"{context_lines}"
+                                )
+                                await self.send_json({"type": "rag_sources", "sources": rag_sources})
+                except Exception as rag_exc:
+                    logger.warning(f"RAG retrieval skipped session={self.session_id}: {rag_exc}")
+
+            voice_system_prompt = (
+                f"{self.agent.system_prompt or ''}{rag_context_block}{VOICE_SYSTEM_PROMPT_ADDENDUM}"
+            ).strip()
             turn_meta: Dict[str, Any] = {
                 "model_used": self.agent.llm_model,
                 "retry_count": 0,
@@ -459,6 +537,8 @@ class VoiceOrchestrator:
                 assistant_text=assistant_text,
                 audio_duration_ms=int(round(audio_duration_ms)),
                 metrics=metrics,
+                rag_sources=rag_sources,
+                interrupted=False,
             )
 
             await self.send_json({
@@ -484,6 +564,39 @@ class VoiceOrchestrator:
 
         except asyncio.CancelledError:
             logger.info(f"Turn task cancelled in session {self.session_id}")
+            partial_text = "".join(collected_tokens).strip()
+            if user_text and partial_text:
+                self._history.append({"role": "assistant", "content": partial_text})
+                try:
+                    await self.send_json({
+                        "type": "transcript",
+                        "role": "assistant",
+                        "text": partial_text,
+                        "interrupted": True,
+                    })
+                except Exception:
+                    pass
+                try:
+                    partial_metrics = TurnLatencyMetrics(
+                        stt_latency_ms=round(getattr(stt_result, "latency_ms", 0.0) or 0.0, 2),
+                        llm_first_token_ms=round(timings["llm_first_token_ms"] or 0.0, 2),
+                        llm_total_ms=round((time.perf_counter() - turn_start) * 1000.0, 2),
+                        tts_first_audio_ms=round(timings["tts_first_audio_ms"] or 0.0, 2),
+                        tts_total_ms=round(timings["tts_total_ms"] or 0.0, 2),
+                        e2e_latency_ms=round((time.perf_counter() - turn_start) * 1000.0, 2),
+                    )
+                    await asyncio.shield(
+                        self._persist_turn(
+                            user_text=user_text,
+                            assistant_text=partial_text,
+                            audio_duration_ms=int(round(audio_duration_ms)),
+                            metrics=partial_metrics,
+                            rag_sources=rag_sources,
+                            interrupted=True,
+                        )
+                    )
+                except Exception as persist_exc:
+                    logger.warning(f"Failed to persist interrupted turn: {persist_exc}")
             raise
         except LLMAuthenticationError as exc:
             await self._handle_turn_failure("AUTH_ERROR", str(exc), user_text=locals().get("user_text"), stt_result=locals().get("stt_result"), turn_meta=locals().get("turn_meta"))
@@ -558,6 +671,8 @@ class VoiceOrchestrator:
         assistant_text: str,
         audio_duration_ms: int,
         metrics: TurnLatencyMetrics,
+        rag_sources: Optional[List[Dict[str, Any]]] = None,
+        interrupted: bool = False,
     ) -> None:
         """Persists both user and assistant messages plus latency metrics to PostgreSQL/SQLite."""
         async with self.db_session_factory() as db:
@@ -578,6 +693,8 @@ class VoiceOrchestrator:
                 tts_first_audio_ms=metrics.tts_first_audio_ms,
                 tts_latency_ms=metrics.tts_total_ms,
                 e2e_latency_ms=metrics.e2e_latency_ms,
+                rag_sources_json=json.dumps(rag_sources) if rag_sources else None,
+                interrupted=interrupted,
             )
             db.add(user_msg)
             db.add(asst_msg)

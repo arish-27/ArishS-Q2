@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     VAD_SILENCE_THRESHOLD_MS: int = 700
     VAD_SPEECH_THRESHOLD: float = 0.5
     VAD_MIN_SPEECH_MS: int = 200
+    VAD_BARGE_IN_DEBOUNCE_MS: int = 250
 
     # Voice WebSocket Security & Rate Limiting
     VOICE_MAX_SESSION_SECONDS: int = 900
@@ -82,6 +83,11 @@ class Settings(BaseSettings):
     # Active Gemini Embedding model with 768 output dimensionality (MRL)
     RAG_EMBEDDING_MODEL: str = "gemini-embedding-001"
     RAG_EMBEDDING_DIM: int = 768
+    RAG_CHUNK_SIZE_TOKENS: int = 500
+    RAG_CHUNK_OVERLAP_TOKENS: int = 50
+    RAG_TOP_K: int = 4
+    RAG_SIMILARITY_THRESHOLD: float = 0.35
+    MAX_UPLOAD_SIZE_MB: int = 10
     UPLOAD_STORAGE_DIR: str = "./uploads"
 
     @field_validator("JWT_SECRET_KEY")

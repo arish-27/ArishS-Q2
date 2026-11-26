@@ -105,6 +105,21 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
                 "Please add your key in the API Key Vault before starting voice chat."
             )
 
+        rag_api_key = api_key if provider_name == "gemini" else settings.GEMINI_API_KEY
+        if provider_name != "gemini":
+            gem_res = await db.execute(
+                select(UserApiKey).where(
+                    UserApiKey.user_id == user.id,
+                    UserApiKey.provider == "gemini",
+                )
+            )
+            gem_row = gem_res.scalar_one_or_none()
+            if gem_row:
+                try:
+                    rag_api_key = decrypt_secret(gem_row.encrypted_key)
+                except Exception:
+                    pass
+
         if not key_error:
             call_session = CallSession(
                 agent_id=agent.id,
@@ -167,6 +182,7 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
         send_json=safe_send_json,
         send_bytes=safe_send_bytes,
         db_session_factory=AsyncSessionLocal,
+        rag_api_key=rag_api_key,
     )
 
     await safe_send_json({

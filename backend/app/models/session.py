@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text, Float
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text, Float, Boolean
 from sqlalchemy.orm import relationship
 from app.core.database import Base, utc_now
 
@@ -42,6 +42,7 @@ class ConversationMessage(Base):
     tool_calls_json = Column(Text, nullable=True)
     tool_results_json = Column(Text, nullable=True)
     rag_sources_json = Column(Text, nullable=True)
+    interrupted = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=utc_now)
 
     session = relationship("CallSession", back_populates="messages")

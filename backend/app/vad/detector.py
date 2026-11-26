@@ -96,6 +96,11 @@ class StreamingVAD:
         self._c.fill(0.0)
         self._context.fill(0.0)
 
+    @property
+    def confirmed_speech_ms(self) -> float:
+        """Continuous voiced duration (ms) in the current uncompleted speech segment."""
+        return self._speech_ms if self._in_speech else 0.0
+
     def _score_frame(self, frame_bytes: bytes) -> float:
         if self.backend_name == "silero-onnx":
             audio_f32 = (np.frombuffer(frame_bytes, dtype=np.int16).astype(np.float32) / 32768.0).reshape(1, -1)

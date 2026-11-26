@@ -1,4 +1,13 @@
-import { User, AuthResponse, Agent, AgentCreateInput, AgentUpdateInput, ApiKeyItem } from '@/types';
+import {
+  User,
+  AuthResponse,
+  Agent,
+  AgentCreateInput,
+  AgentUpdateInput,
+  ApiKeyItem,
+  KnowledgeDocument,
+  RagQueryResponse,
+} from '@/types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
@@ -219,6 +228,56 @@ class ApiClient {
         }
       }
     }
+  }
+
+  // Knowledge Base & RAG Endpoints
+  async listKnowledge(agentId?: string): Promise<KnowledgeDocument[]> {
+    const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+    return this.request<KnowledgeDocument[]>(`/knowledge${query}`);
+  }
+
+  async uploadKnowledge(agentId: string, file: File): Promise<KnowledgeDocument> {
+    const token = this.getToken();
+    const formData = new FormData();
+    formData.append('agent_id', agentId);
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE_URL}/knowledge/upload`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || 'Document upload failed');
+    }
+    return data as KnowledgeDocument;
+  }
+
+  async deleteKnowledge(documentId: string): Promise<void> {
+    await this.request<void>(`/knowledge/${documentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async queryTestKnowledge(
+    agentId: string,
+    query: string,
+    topK = 4,
+    similarityThreshold = 0.35
+  ): Promise<RagQueryResponse> {
+    return this.request<RagQueryResponse>('/knowledge/query-test', {
+      method: 'POST',
+      body: JSON.stringify({
+        agent_id: agentId,
+        query,
+        top_k: topK,
+        similarity_threshold: similarityThreshold,
+      }),
+    });
   }
 }
 
