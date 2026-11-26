@@ -137,5 +137,10 @@ class Settings(BaseSettings):
 try:
     settings = Settings()
 except Exception as e:
-    # Raise clear error if configuration fails at startup
+    import sys
+    print(
+        f"\n[STARTUP ERROR] Missing or invalid environment configuration: {e}\n"
+        "Copy .env.example to .env and set valid JWT_SECRET_KEY and ENCRYPTION_SECRET_KEY.\n",
+        file=sys.stderr,
+    )
     raise RuntimeError(f"Startup configuration error: {e}") from e

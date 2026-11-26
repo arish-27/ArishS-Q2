@@ -73,6 +73,7 @@ services:
       - UPLOAD_STORAGE_DIR=/app/uploads
     volumes:
       - ./backend:/app
+      - ./docs:/app/docs
       - backend_uploads:/app/uploads
     ports:
       - "${BACKEND_PORT:-8000}:8000"
