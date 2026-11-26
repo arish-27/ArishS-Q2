@@ -10,6 +10,9 @@ import {
   ToolItem,
   BuiltinToolPreset,
   ToolCreateInput,
+  AnalyticsOverview,
+  AnalyticsSessionSummary,
+  AnalyticsSessionDetail,
 } from '@/types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -316,6 +319,28 @@ class ApiClient {
 
   async unassignToolFromAgent(toolId: string, agentId: string): Promise<ToolItem> {
     return this.request<ToolItem>(`/tools/${toolId}/assign/${agentId}`, { method: 'DELETE' });
+  }
+
+  // Analytics Endpoints
+  async getAnalyticsOverview(): Promise<AnalyticsOverview> {
+    return this.request<AnalyticsOverview>('/analytics/overview');
+  }
+
+  async listAnalyticsSessions(filters?: {
+    agent_id?: string;
+    date?: string;
+    status?: string;
+  }): Promise<AnalyticsSessionSummary[]> {
+    const params = new URLSearchParams();
+    if (filters?.agent_id) params.set('agent_id', filters.agent_id);
+    if (filters?.date) params.set('date', filters.date);
+    if (filters?.status) params.set('status', filters.status);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return this.request<AnalyticsSessionSummary[]>(`/analytics/sessions${qs}`);
+  }
+
+  async getAnalyticsSessionDetail(sessionId: string): Promise<AnalyticsSessionDetail> {
+    return this.request<AnalyticsSessionDetail>(`/analytics/sessions/${sessionId}`);
   }
 }
 

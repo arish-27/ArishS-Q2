@@ -3,23 +3,26 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
-import { Agent, ApiKeyItem } from '@/types';
-import { Bot, Plus, Key, ArrowRight, Activity, Sparkles, Radio } from 'lucide-react';
+import { Agent, AnalyticsOverview, ApiKeyItem } from '@/types';
+import { Bot, Plus, Key, ArrowRight, Activity, Sparkles, Radio, Clock, AlertTriangle } from 'lucide-react';
 
 export default function DashboardPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
+  const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [agentsData, keysData] = await Promise.all([
+        const [agentsData, keysData, ovData] = await Promise.all([
           api.listAgents().catch(() => []),
           api.listKeys().catch(() => []),
+          api.getAnalyticsOverview().catch(() => null),
         ]);
         setAgents(agentsData);
         setKeys(keysData);
+        setOverview(ovData);
       } finally {
         setLoading(false);
       }
@@ -49,7 +52,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800">
           <div className="flex items-center justify-between text-slate-400 mb-3">
             <span className="text-xs font-semibold uppercase tracking-wider">Total Agents</span>
@@ -61,20 +64,40 @@ export default function DashboardPage() {
 
         <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800">
           <div className="flex items-center justify-between text-slate-400 mb-3">
-            <span className="text-xs font-semibold uppercase tracking-wider">Encrypted API Keys</span>
-            <Key className="w-4 h-4 text-sky-400" />
+            <span className="text-xs font-semibold uppercase tracking-wider">Total Sessions</span>
+            <Radio className="w-4 h-4 text-sky-400" />
           </div>
-          <p className="text-3xl font-extrabold text-white">{loading ? '...' : keys.length}</p>
-          <p className="text-xs text-slate-500 mt-1">Stored securely via Fernet AES-256</p>
+          <p className="text-3xl font-extrabold text-white">{loading ? '...' : overview?.total_sessions ?? 0}</p>
+          <p className="text-xs text-slate-500 mt-1">{overview?.total_minutes ?? 0} total mins</p>
         </div>
 
         <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800">
           <div className="flex items-center justify-between text-slate-400 mb-3">
-            <span className="text-xs font-semibold uppercase tracking-wider">Target Latency</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Avg E2E Latency</span>
             <Activity className="w-4 h-4 text-purple-400" />
           </div>
-          <p className="text-3xl font-extrabold text-white">&lt; 1.2s</p>
-          <p className="text-xs text-slate-500 mt-1">End-to-end VAD + STT + LLM + TTS</p>
+          <p className="text-3xl font-extrabold text-white">
+            {loading ? '...' : overview?.avg_e2e_latency_ms ? `${overview.avg_e2e_latency_ms}ms` : '0ms'}
+          </p>
+          <p className="text-xs text-slate-500 mt-1">STT + LLM + TTS</p>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800">
+          <div className="flex items-center justify-between text-slate-400 mb-3">
+            <span className="text-xs font-semibold uppercase tracking-wider">Errors</span>
+            <AlertTriangle className="w-4 h-4 text-rose-400" />
+          </div>
+          <p className="text-3xl font-extrabold text-white">{loading ? '...' : overview?.error_count ?? 0}</p>
+          <p className="text-xs text-slate-500 mt-1">Across all calls</p>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800">
+          <div className="flex items-center justify-between text-slate-400 mb-3">
+            <span className="text-xs font-semibold uppercase tracking-wider">API Keys</span>
+            <Key className="w-4 h-4 text-amber-400" />
+          </div>
+          <p className="text-3xl font-extrabold text-white">{loading ? '...' : keys.length}</p>
+          <p className="text-xs text-slate-500 mt-1">Fernet AES-256</p>
         </div>
       </div>
 

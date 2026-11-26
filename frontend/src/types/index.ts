@@ -135,3 +135,50 @@ export interface ToolCreateInput {
   webhook_headers?: string;
   webhook_body_template?: string;
 }
+
+export interface AnalyticsOverview {
+  total_sessions: number;
+  total_minutes: number;
+  error_count: number;
+  avg_stt_latency_ms: number;
+  avg_llm_first_token_ms: number;
+  avg_tts_first_audio_ms: number;
+  avg_e2e_latency_ms: number;
+  sessions_per_day: Array<{ date: string; sessions: number; errors: number }>;
+  top_agents: Array<{ agent_id: string; agent_name: string; sessions: number; avg_e2e_ms: number }>;
+}
+
+export interface AnalyticsSessionSummary {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  is_public: boolean;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number;
+  status: string;
+  total_turns: number;
+  avg_latency_ms: number;
+}
+
+export interface AnalyticsMessageDetail {
+  id: string;
+  role: string;
+  content: string;
+  audio_duration_ms: number;
+  stt_latency_ms: number;
+  llm_first_token_ms: number;
+  llm_latency_ms: number;
+  tts_first_audio_ms: number;
+  tts_latency_ms: number;
+  e2e_latency_ms: number;
+  tool_calls?: Array<{ name: string; arguments: Record<string, unknown> }> | null;
+  tool_results?: Array<{ name: string; result: Record<string, unknown>; duration_ms: number }> | null;
+  rag_sources?: Array<{ file: string; score: number; chunk_index: number }> | null;
+  interrupted: boolean;
+  created_at: string | null;
+}
+
+export interface AnalyticsSessionDetail extends AnalyticsSessionSummary {
+  messages: AnalyticsMessageDetail[];
+}
