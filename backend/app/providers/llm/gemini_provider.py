@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 import httpx
 from typing import AsyncIterator, List, Dict, Optional
 from app.providers.llm.base import (
@@ -11,18 +13,45 @@ from app.providers.llm.base import (
 )
 from app.core.logger import logger
 
+_GEMINI_HTTP_CLIENTS: Dict[int, httpx.AsyncClient] = {}
+
+
+def get_gemini_http_client() -> httpx.AsyncClient:
+    """Returns a persistent keep-alive httpx.AsyncClient scoped to the active event loop."""
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    client = _GEMINI_HTTP_CLIENTS.get(loop_id)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            limits=httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=50,
+                keepalive_expiry=60.0,
+            ),
+        )
+        _GEMINI_HTTP_CLIENTS[loop_id] = client
+    return client
+
+
 class GeminiProvider(BaseLLMProvider):
     """
     Google Gemini streaming LLM provider.
-    Uses official Gemini REST SSE streamGenerateContent endpoint.
+    Uses official Gemini REST SSE streamGenerateContent endpoint over a persistent HTTP client.
     """
 
     DEFAULT_MODEL = "gemini-3.5-flash-lite"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def __init__(self, api_key: str, thinking_level: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        thinking_level: Optional[str] = None,
+        max_output_tokens: Optional[int] = None,
+    ):
         super().__init__(api_key)
         self.thinking_level = thinking_level
+        self.max_output_tokens = max_output_tokens
 
     async def generate_stream(
         self,
@@ -46,6 +75,8 @@ class GeminiProvider(BaseLLMProvider):
         generation_config: Dict[str, any] = {
             "temperature": max(0.0, min(2.0, temperature)),
         }
+        if self.max_output_tokens is not None:
+            generation_config["maxOutputTokens"] = self.max_output_tokens
         if self.thinking_level:
             generation_config["thinkingConfig"] = {
                 "thinkingLevel": self.thinking_level
@@ -61,60 +92,75 @@ class GeminiProvider(BaseLLMProvider):
                 "parts": [{"text": system_prompt}]
             }
 
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        logger.info(f"Gemini request model={target_model} generationConfig={generation_config}")
+        client = get_gemini_http_client()
+        req_start = time.perf_counter()
+        first_byte_ms: Optional[float] = None
+        first_token_ms: Optional[float] = None
 
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("POST", url, json=payload) as response:
-                    if response.status_code in (401, 403):
-                        error_body = await response.aread()
-                        logger.error(f"Gemini authentication failed: {error_body.decode('utf-8', errors='ignore')}")
-                        raise LLMAuthenticationError("Invalid or unauthorized Gemini API key.")
+            async with client.stream("POST", url, json=payload) as response:
+                if response.status_code in (401, 403):
+                    error_body = await response.aread()
+                    logger.error(f"Gemini authentication failed: {error_body.decode('utf-8', errors='ignore')}")
+                    raise LLMAuthenticationError("Invalid or unauthorized Gemini API key.")
 
-                    if response.status_code == 429:
-                        error_body = await response.aread()
-                        logger.warning(f"Gemini rate limit exceeded: {error_body.decode('utf-8', errors='ignore')}")
-                        raise LLMRateLimitError("Gemini API quota or rate limit exceeded.")
+                if response.status_code == 429:
+                    error_body = await response.aread()
+                    logger.warning(f"Gemini rate limit exceeded: {error_body.decode('utf-8', errors='ignore')}")
+                    raise LLMRateLimitError("Gemini API quota or rate limit exceeded.")
 
-                    if response.status_code in (502, 503, 504):
-                        error_body = await response.aread()
-                        logger.warning(
-                            f"Gemini service unavailable ({response.status_code}): "
-                            f"{error_body.decode('utf-8', errors='ignore')}"
-                        )
-                        raise LLMServiceUnavailableError(
-                            f"Gemini API temporarily unavailable (HTTP {response.status_code})."
-                        )
+                if response.status_code in (502, 503, 504):
+                    error_body = await response.aread()
+                    logger.warning(
+                        f"Gemini service unavailable ({response.status_code}): "
+                        f"{error_body.decode('utf-8', errors='ignore')}"
+                    )
+                    raise LLMServiceUnavailableError(
+                        f"Gemini API temporarily unavailable (HTTP {response.status_code})."
+                    )
 
-                    if response.status_code != 200:
-                        error_body = await response.aread()
-                        logger.error(f"Gemini error {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
-                        raise LLMProviderError(f"Gemini API returned HTTP {response.status_code}")
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    logger.error(f"Gemini error {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
+                    raise LLMProviderError(f"Gemini API returned HTTP {response.status_code}")
 
-                    # Parse SSE stream
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if not data_str:
-                            continue
-                        try:
-                            chunk = json.loads(data_str)
-                            candidates = chunk.get("candidates", [])
-                            if candidates:
-                                parts = candidates[0].get("content", {}).get("parts", [])
-                                for part in parts:
-                                    text = part.get("text", "")
-                                    if text:
-                                        yield text
-                        except json.JSONDecodeError:
-                            continue
+                # Parse SSE stream
+                async for line in response.aiter_lines():
+                    if first_byte_ms is None:
+                        first_byte_ms = (time.perf_counter() - req_start) * 1000.0
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        chunk = json.loads(data_str)
+                        candidates = chunk.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            for part in parts:
+                                text = part.get("text", "")
+                                if text:
+                                    if first_token_ms is None:
+                                        first_token_ms = (time.perf_counter() - req_start) * 1000.0
+                                    yield text
+                    except json.JSONDecodeError:
+                        continue
+
+            total_ms = (time.perf_counter() - req_start) * 1000.0
+            logger.info(
+                f"GeminiStreamSplit model={target_model} "
+                f"first_byte_ms={round(first_byte_ms or total_ms, 1)} "
+                f"first_token_ms={round(first_token_ms or total_ms, 1)} "
+                f"total_ms={round(total_ms, 1)}"
+            )
 
         except httpx.TimeoutException as e:
             logger.error(f"Gemini request timed out: {e}")
             raise LLMTimeoutError("Gemini streaming request timed out.") from e
-        except (LLMProviderError, LLMAuthenticationError, LLMRateLimitError):
+        except (LLMProviderError, LLMAuthenticationError, LLMRateLimitError, LLMServiceUnavailableError):
             raise
         except Exception as e:
             logger.error(f"Unexpected Gemini provider error: {e}")

@@ -141,6 +141,8 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
         llm = get_llm_provider(agent.llm_provider, api_key or "")
         if hasattr(llm, "thinking_level"):
             llm.thinking_level = "minimal"
+        if hasattr(llm, "max_output_tokens"):
+            llm.max_output_tokens = 150
         stt = get_stt_provider(agent.stt_provider)
         tts = get_tts_provider(agent.tts_provider)
         vad = StreamingVAD(
@@ -178,6 +180,25 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
         "max_message_bytes": settings.WS_MAX_MESSAGE_BYTES,
         "state": orchestrator.state.value,
     })
+
+    async def _prewarm_session_providers() -> None:
+        """Pre-warms persistent LLM HTTP/TLS connection and TTS client on WebSocket connect."""
+        try:
+            await llm.generate(
+                messages=[{"role": "user", "content": "hi"}],
+                system_prompt="Reply ok.",
+                temperature=0.0,
+                model=agent.llm_model,
+            )
+        except Exception as exc:
+            logger.debug(f"Voice LLM prewarm skipped session={session_id}: {exc}")
+        try:
+            async for _ in tts.synthesize_stream("ok", voice=agent.tts_voice):
+                break
+        except Exception as exc:
+            logger.debug(f"Voice TTS prewarm skipped session={session_id}: {exc}")
+
+    prewarm_task = asyncio.create_task(_prewarm_session_providers())
 
     session_timed_out = False
 
@@ -270,6 +291,7 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
         logger.error(f"Voice WebSocket error session={session_id}: {exc}")
         final_status = "error"
     finally:
+        prewarm_task.cancel()
         watchdog_task.cancel()
         try:
             await watchdog_task

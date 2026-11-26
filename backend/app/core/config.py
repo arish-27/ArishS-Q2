@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Speech, STT & TTS Defaults
     DEFAULT_STT_PROVIDER: str = "faster-whisper"
     WHISPER_MODEL_SIZE: str = "small"
+    WHISPER_ENGLISH_MODEL_SIZE: str = "small.en"
+    WHISPER_BEAM_SIZE: int = 1
+    WHISPER_CPU_THREADS: int = 0  # 0 = auto-detect os.cpu_count()
     WHISPER_COMPUTE_TYPE: str = "int8"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_WARMUP_ON_STARTUP: bool = True

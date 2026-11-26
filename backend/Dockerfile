@@ -17,10 +17,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Pre-download faster-whisper model (default: small, CPU int8) into image cache so first call is instant
+# Pre-download faster-whisper models (small.en for English + configurable WHISPER_MODEL_SIZE)
 ARG WHISPER_MODEL_SIZE=small
+ARG WHISPER_ENGLISH_MODEL_SIZE=small.en
 ENV WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
-RUN python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL_SIZE'], device='cpu', compute_type='int8')"
+ENV WHISPER_ENGLISH_MODEL_SIZE=${WHISPER_ENGLISH_MODEL_SIZE}
+RUN python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_ENGLISH_MODEL_SIZE'], device='cpu', compute_type='int8'); WhisperModel(os.environ['WHISPER_MODEL_SIZE'], device='cpu', compute_type='int8')"
 
 # Copy backend application source code
 COPY . .

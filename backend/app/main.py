@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     yield
     if warmup_task and not warmup_task.done():
         warmup_task.cancel()
+    from app.providers.llm.gemini_provider import _GEMINI_HTTP_CLIENTS
+    for client in list(_GEMINI_HTTP_CLIENTS.values()):
+        if not client.is_closed:
+            await client.aclose()
+    _GEMINI_HTTP_CLIENTS.clear()
     await rate_limiter.close()
     await engine.dispose()
 

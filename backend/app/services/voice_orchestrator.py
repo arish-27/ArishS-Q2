@@ -98,7 +98,7 @@ class VoiceOrchestrator:
         self.send_json = send_json
         self.send_bytes = send_bytes
         self.db_session_factory = db_session_factory
-        self.context_manager = context_manager or ConversationContextManager()
+        self.context_manager = context_manager or ConversationContextManager(max_turns=6)
 
         self._state: VoiceState = VoiceState.IDLE
         self._history: List[Dict[str, str]] = []

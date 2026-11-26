@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import threading
 import time
@@ -8,25 +9,25 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.providers.stt.base import BaseSTTProvider, STTProviderError, STTResult
 
-_MODEL_CACHE: Dict[Tuple[str, str, str], object] = {}
+_MODEL_CACHE: Dict[Tuple[str, str, str, int], object] = {}
 _MODEL_LOCK = threading.Lock()
 
-# Common Whisper hallucinations on short noise / silence bursts
-_HALLUCINATION_PHRASES = {
-    "thank you",
-    "thank you.",
-    "thanks for watching",
-    "thanks for watching.",
-    "you",
-    "bye",
-    "bye.",
-    "...",
-}
+
+def _resolve_cpu_threads() -> int:
+    if settings.WHISPER_CPU_THREADS and settings.WHISPER_CPU_THREADS > 0:
+        return settings.WHISPER_CPU_THREADS
+    return os.cpu_count() or 4
 
 
-def _get_or_load_whisper_model(model_size: str, device: str, compute_type: str):
+def _get_or_load_whisper_model(
+    model_size: str,
+    device: str,
+    compute_type: str,
+    cpu_threads: Optional[int] = None,
+):
     """Thread-safe lazy singleton loader for faster-whisper CTranslate2 model."""
-    key = (model_size, device, compute_type)
+    threads = cpu_threads or _resolve_cpu_threads()
+    key = (model_size, device, compute_type, threads)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
 
@@ -36,24 +37,33 @@ def _get_or_load_whisper_model(model_size: str, device: str, compute_type: str):
         from faster_whisper import WhisperModel
 
         logger.info(
-            f"Loading faster-whisper model size={model_size} device={device} compute_type={compute_type}"
+            f"Loading faster-whisper model size={model_size} device={device} "
+            f"compute_type={compute_type} cpu_threads={threads}"
         )
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            cpu_threads=threads,
+        )
         _MODEL_CACHE[key] = model
         return model
 
 
 def _warmup_sync() -> None:
+    target_size = settings.WHISPER_ENGLISH_MODEL_SIZE or settings.WHISPER_MODEL_SIZE
+    threads = _resolve_cpu_threads()
     model = _get_or_load_whisper_model(
-        settings.WHISPER_MODEL_SIZE,
+        target_size,
         settings.WHISPER_DEVICE,
         settings.WHISPER_COMPUTE_TYPE,
+        threads,
     )
     silence = np.zeros(3200, dtype=np.float32)  # 200ms @ 16kHz
     segments, _ = model.transcribe(
         silence,
         language="en",
-        beam_size=1,
+        beam_size=settings.WHISPER_BEAM_SIZE,
         temperature=0.0,
         vad_filter=False,
         condition_on_previous_text=False,
@@ -66,11 +76,25 @@ async def warmup_whisper_model() -> None:
     start = time.perf_counter()
     await asyncio.to_thread(_warmup_sync)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
+    target_size = settings.WHISPER_ENGLISH_MODEL_SIZE or settings.WHISPER_MODEL_SIZE
     logger.info(
-        f"faster-whisper warmup complete size={settings.WHISPER_MODEL_SIZE} "
+        f"faster-whisper warmup complete size={target_size} "
         f"device={settings.WHISPER_DEVICE} compute_type={settings.WHISPER_COMPUTE_TYPE} "
+        f"cpu_threads={_resolve_cpu_threads()} beam_size={settings.WHISPER_BEAM_SIZE} "
         f"elapsed_ms={elapsed_ms:.1f}"
     )
+
+# Common Whisper hallucinations on short noise / silence bursts
+_HALLUCINATION_PHRASES = {
+    "thank you",
+    "thank you.",
+    "thanks for watching",
+    "thanks for watching.",
+    "you",
+    "bye",
+    "bye.",
+    "...",
+}
 
 
 def _is_hallucinated_or_empty(text: str, avg_logprob: Optional[float], duration_ms: float) -> bool:
@@ -98,10 +122,23 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
         model_size: str = settings.WHISPER_MODEL_SIZE,
         device: str = settings.WHISPER_DEVICE,
         compute_type: str = settings.WHISPER_COMPUTE_TYPE,
+        beam_size: int = settings.WHISPER_BEAM_SIZE,
+        cpu_threads: Optional[int] = None,
     ):
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self.beam_size = max(1, int(beam_size))
+        self.cpu_threads = cpu_threads or _resolve_cpu_threads()
+
+    def _resolve_model_for_language(self, lang_code: str) -> str:
+        if (
+            (lang_code == "en" or lang_code.startswith("en-"))
+            and self.model_size == settings.WHISPER_MODEL_SIZE
+            and settings.WHISPER_ENGLISH_MODEL_SIZE
+        ):
+            return settings.WHISPER_ENGLISH_MODEL_SIZE
+        return self.model_size
 
     def _transcribe_sync(self, audio_pcm16: bytes, sample_rate: int, language: str) -> STTResult:
         start = time.perf_counter()
@@ -119,13 +156,19 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
             x_new = np.linspace(0.0, 1.0, target_len, endpoint=False)
             audio_f32 = np.interp(x_new, x_old, audio_f32).astype(np.float32)
 
-        lang_code = (language or "en").strip() or "en"
-        model = _get_or_load_whisper_model(self.model_size, self.device, self.compute_type)
+        lang_code = (language or "en").strip().lower() or "en"
+        effective_model = self._resolve_model_for_language(lang_code)
+        model = _get_or_load_whisper_model(
+            effective_model,
+            self.device,
+            self.compute_type,
+            self.cpu_threads,
+        )
         segments_iter, info = model.transcribe(
             audio_f32,
-            language=lang_code,
-            beam_size=5,
-            best_of=5,
+            language="en" if lang_code.startswith("en") else lang_code,
+            beam_size=self.beam_size,
+            best_of=self.beam_size,
             temperature=0.0,
             vad_filter=False,  # Already segmented by streaming server-side VAD
             condition_on_previous_text=False,
