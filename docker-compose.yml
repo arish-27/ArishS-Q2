@@ -92,15 +92,14 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+        - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/api/v1/voice/stream}
     container_name: voiceagent_frontend
     restart: unless-stopped
     environment:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
       - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/api/v1/voice/stream}
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
     ports:
       - "${FRONTEND_PORT:-3001}:3000"
     depends_on:
