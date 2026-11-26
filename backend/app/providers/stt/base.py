@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional
 
 
 class STTProviderError(Exception):
@@ -13,6 +14,8 @@ class STTResult:
     language: str
     duration_ms: float
     latency_ms: float
+    avg_logprob: Optional[float] = None
+    no_speech_prob: Optional[float] = None
 
 
 class BaseSTTProvider(ABC):

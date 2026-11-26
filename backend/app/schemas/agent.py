@@ -51,7 +51,7 @@ class AgentBase(BaseModel):
     system_prompt: str = Field(default="You are a helpful, conversational voice assistant.")
 
     llm_provider: str = Field(default="gemini", description="'gemini' or 'openai'")
-    llm_model: str = Field(default="gemini-4-hydrogen")
+    llm_model: str = Field(default="gemini-3.5-flash-lite")
     temperature: float = Field(default=0.7, ge=0.0, le=1.0)
 
     stt_provider: str = Field(default="faster-whisper")

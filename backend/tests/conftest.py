@@ -4,6 +4,7 @@ import time
 import urllib.request
 import uvicorn
 import os
+os.environ.setdefault("WHISPER_WARMUP_ON_STARTUP", "false")
 from app.main import app
 from app.core.database import Base, engine
 

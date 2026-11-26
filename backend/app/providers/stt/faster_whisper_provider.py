@@ -1,7 +1,8 @@
 import asyncio
+import re
 import threading
 import time
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 import numpy as np
 from app.core.config import settings
 from app.core.logger import logger
@@ -9,6 +10,18 @@ from app.providers.stt.base import BaseSTTProvider, STTProviderError, STTResult
 
 _MODEL_CACHE: Dict[Tuple[str, str, str], object] = {}
 _MODEL_LOCK = threading.Lock()
+
+# Common Whisper hallucinations on short noise / silence bursts
+_HALLUCINATION_PHRASES = {
+    "thank you",
+    "thank you.",
+    "thanks for watching",
+    "thanks for watching.",
+    "you",
+    "bye",
+    "bye.",
+    "...",
+}
 
 
 def _get_or_load_whisper_model(model_size: str, device: str, compute_type: str):
@@ -28,6 +41,50 @@ def _get_or_load_whisper_model(model_size: str, device: str, compute_type: str):
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
         _MODEL_CACHE[key] = model
         return model
+
+
+def _warmup_sync() -> None:
+    model = _get_or_load_whisper_model(
+        settings.WHISPER_MODEL_SIZE,
+        settings.WHISPER_DEVICE,
+        settings.WHISPER_COMPUTE_TYPE,
+    )
+    silence = np.zeros(3200, dtype=np.float32)  # 200ms @ 16kHz
+    segments, _ = model.transcribe(
+        silence,
+        language="en",
+        beam_size=1,
+        temperature=0.0,
+        vad_filter=False,
+        condition_on_previous_text=False,
+    )
+    list(segments)
+
+
+async def warmup_whisper_model() -> None:
+    """Pre-loads and warms up the configured faster-whisper model at application startup."""
+    start = time.perf_counter()
+    await asyncio.to_thread(_warmup_sync)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    logger.info(
+        f"faster-whisper warmup complete size={settings.WHISPER_MODEL_SIZE} "
+        f"device={settings.WHISPER_DEVICE} compute_type={settings.WHISPER_COMPUTE_TYPE} "
+        f"elapsed_ms={elapsed_ms:.1f}"
+    )
+
+
+def _is_hallucinated_or_empty(text: str, avg_logprob: Optional[float], duration_ms: float) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    alnum = re.sub(r"[^A-Za-z0-9]", "", cleaned)
+    if len(alnum) < 2:
+        return True
+    if avg_logprob is not None and avg_logprob <= -1.0:
+        return True
+    if cleaned.lower() in _HALLUCINATION_PHRASES and duration_ms < 1500.0:
+        return True
+    return False
 
 
 class FasterWhisperSTTProvider(BaseSTTProvider):
@@ -62,24 +119,73 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
             x_new = np.linspace(0.0, 1.0, target_len, endpoint=False)
             audio_f32 = np.interp(x_new, x_old, audio_f32).astype(np.float32)
 
+        lang_code = (language or "en").strip() or "en"
         model = _get_or_load_whisper_model(self.model_size, self.device, self.compute_type)
-        segments, info = model.transcribe(
+        segments_iter, info = model.transcribe(
             audio_f32,
-            language=language or "en",
-            beam_size=1,
-            best_of=1,
+            language=lang_code,
+            beam_size=5,
+            best_of=5,
             temperature=0.0,
             vad_filter=False,  # Already segmented by streaming server-side VAD
             condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
         )
-        transcript = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+        segments = list(segments_iter)
+
+        kept_texts = []
+        kept_logprobs = []
+        kept_no_speech = []
+        all_logprobs = []
+        all_no_speech = []
+
+        for seg in segments:
+            seg_text = (seg.text or "").strip()
+            seg_lp = getattr(seg, "avg_logprob", None)
+            seg_nsp = getattr(seg, "no_speech_prob", None)
+            if seg_lp is not None:
+                all_logprobs.append(float(seg_lp))
+            if seg_nsp is not None:
+                all_no_speech.append(float(seg_nsp))
+
+            if not seg_text:
+                continue
+            if seg_nsp is not None and seg_nsp >= 0.6:
+                continue
+            if seg_lp is not None and seg_lp <= -1.0:
+                continue
+
+            kept_texts.append(seg_text)
+            if seg_lp is not None:
+                kept_logprobs.append(float(seg_lp))
+            if seg_nsp is not None:
+                kept_no_speech.append(float(seg_nsp))
+
+        transcript = " ".join(kept_texts).strip()
+        avg_logprob = (
+            round(sum(kept_logprobs) / len(kept_logprobs), 4)
+            if kept_logprobs
+            else (round(sum(all_logprobs) / len(all_logprobs), 4) if all_logprobs else None)
+        )
+        no_speech_prob = (
+            round(sum(kept_no_speech) / len(kept_no_speech), 4)
+            if kept_no_speech
+            else (round(sum(all_no_speech) / len(all_no_speech), 4) if all_no_speech else None)
+        )
+
+        if _is_hallucinated_or_empty(transcript, avg_logprob, duration_ms):
+            transcript = ""
+
         latency_ms = (time.perf_counter() - start) * 1000.0
-        detected_lang = getattr(info, "language", language) or language
+        detected_lang = getattr(info, "language", lang_code) or lang_code
         return STTResult(
             text=transcript,
             language=detected_lang,
             duration_ms=round(duration_ms, 2),
             latency_ms=round(latency_ms, 2),
+            avg_logprob=avg_logprob,
+            no_speech_prob=no_speech_prob,
         )
 
     async def transcribe(

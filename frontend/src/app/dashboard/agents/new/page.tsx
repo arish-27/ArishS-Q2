@@ -21,7 +21,7 @@ export default function CreateAgentPage() {
   );
 
   const [llmProvider, setLlmProvider] = useState('gemini');
-  const [llmModel, setLlmModel] = useState('gemini-4-hydrogen');
+  const [llmModel, setLlmModel] = useState('gemini-3.5-flash-lite');
   const [temperature, setTemperature] = useState(0.7);
 
   const [sttProvider, setSttProvider] = useState('faster-whisper');
@@ -197,7 +197,7 @@ export default function CreateAgentPage() {
                 value={llmProvider}
                 onChange={(e) => {
                   setLlmProvider(e.target.value);
-                  setLlmModel(e.target.value === 'gemini' ? 'gemini-4-hydrogen' : 'gpt-6-luna');
+                  setLlmModel(e.target.value === 'gemini' ? 'gemini-3.5-flash-lite' : 'gpt-6-luna');
                 }}
                 className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-emerald-500 text-sm transition"
               >

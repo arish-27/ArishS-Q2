@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -14,6 +15,7 @@ from app.providers.llm.base import (
     LLMAuthenticationError,
     LLMProviderError,
     LLMRateLimitError,
+    LLMServiceUnavailableError,
     LLMTimeoutError,
 )
 from app.providers.stt.base import BaseSTTProvider
@@ -57,6 +59,14 @@ class TurnLatencyMetrics:
 
 SendJsonFn = Callable[[Dict[str, Any]], Awaitable[None]]
 SendBytesFn = Callable[[bytes], Awaitable[None]]
+
+
+VOICE_SYSTEM_PROMPT_ADDENDUM = (
+    "\n\n[Voice Mode]: Reply in 1-2 short, natural spoken sentences. "
+    "Avoid markdown, bullet points, or emojis."
+)
+FALLBACK_ERROR_SPEECH = "Sorry, I had trouble. Could you repeat that?"
+TRANSIENT_LLM_ERRORS = (LLMServiceUnavailableError, LLMRateLimitError, LLMTimeoutError)
 
 
 class VoiceOrchestrator:
@@ -210,8 +220,17 @@ class VoiceOrchestrator:
                 return
 
             user_text = stt_result.text.strip()
-            if not user_text:
+            alnum_count = len(re.sub(r"[^A-Za-z0-9]", "", user_text))
+            if (
+                not user_text
+                or alnum_count < 2
+                or (stt_result.avg_logprob is not None and stt_result.avg_logprob <= -1.0)
+            ):
                 # Transition: THINKING -> LISTENING when audio had no recognizable speech
+                logger.info(
+                    f"VoiceTurn dropped session={self.session_id} transcript={user_text!r} "
+                    f"stt_avg_logprob={stt_result.avg_logprob} reason=empty_or_low_confidence"
+                )
                 await self.transition(VoiceState.LISTENING, reason="empty_transcript")
                 return
 
@@ -230,35 +249,129 @@ class VoiceOrchestrator:
                 model=self.agent.llm_model,
             )
 
+            voice_system_prompt = f"{self.agent.system_prompt or ''}{VOICE_SYSTEM_PROMPT_ADDENDUM}".strip()
+            turn_meta: Dict[str, Any] = {
+                "model_used": self.agent.llm_model,
+                "retry_count": 0,
+            }
+
             # 2. Concurrent LLM producer & TTS consumer
             async def llm_producer() -> None:
                 llm_start = time.perf_counter()
                 splitter = StreamingSentenceSplitter()
+                max_transient_retries = 2
+                max_timeout_retries = 1
+                primary_model = self.agent.llm_model
+                fallback_model = (
+                    settings.DEFAULT_GEMINI_FALLBACK_MODEL
+                    if (
+                        self.agent.llm_provider == "gemini"
+                        and settings.DEFAULT_GEMINI_FALLBACK_MODEL
+                        and settings.DEFAULT_GEMINI_FALLBACK_MODEL != primary_model
+                    )
+                    else None
+                )
+
+                last_exc: Optional[Exception] = None
+                candidate_model = primary_model
+                primary_attempt = 0
+                using_fallback = False
+
                 try:
-                    async for token in self.llm.generate_stream(
-                        messages=prepared_messages,
-                        system_prompt=self.agent.system_prompt,
-                        temperature=self.agent.temperature,
-                        model=self.agent.llm_model,
-                    ):
+                    while True:
                         if self._cancel_event.is_set():
+                            return
+                        turn_meta["model_used"] = candidate_model
+                        if not using_fallback:
+                            turn_meta["retry_count"] = primary_attempt
+
+                        any_token_emitted = False
+                        stream_iter = self.llm.generate_stream(
+                            messages=prepared_messages,
+                            system_prompt=voice_system_prompt,
+                            temperature=self.agent.temperature,
+                            model=candidate_model,
+                        ).__aiter__()
+                        try:
+                            while True:
+                                try:
+                                    if not any_token_emitted:
+                                        token = await asyncio.wait_for(
+                                            stream_iter.__anext__(),
+                                            timeout=settings.LLM_FIRST_TOKEN_TIMEOUT_S,
+                                        )
+                                    else:
+                                        token = await stream_iter.__anext__()
+                                except StopAsyncIteration:
+                                    break
+                                except asyncio.TimeoutError as timeout_exc:
+                                    aclose = getattr(stream_iter, "aclose", None)
+                                    if aclose:
+                                        try:
+                                            await aclose()
+                                        except Exception:
+                                            pass
+                                    raise LLMTimeoutError(
+                                        f"LLM first-token timed out after {settings.LLM_FIRST_TOKEN_TIMEOUT_S}s "
+                                        f"on model={candidate_model}"
+                                    ) from timeout_exc
+
+                                if self._cancel_event.is_set():
+                                    break
+                                if token:
+                                    any_token_emitted = True
+                                    if timings["llm_first_token_ms"] is None:
+                                        timings["llm_first_token_ms"] = (time.perf_counter() - llm_start) * 1000.0
+                                collected_tokens.append(token)
+                                await self.send_json({"type": "llm_token", "token": token})
+
+                                for sentence in splitter.feed(token):
+                                    if timings["first_sentence_queued_perf"] is None:
+                                        timings["first_sentence_queued_perf"] = time.perf_counter()
+                                    await sentence_queue.put(sentence)
+
+                            for sentence in splitter.flush():
+                                if timings["first_sentence_queued_perf"] is None:
+                                    timings["first_sentence_queued_perf"] = time.perf_counter()
+                                await sentence_queue.put(sentence)
+
+                            timings["llm_total_ms"] = (time.perf_counter() - llm_start) * 1000.0
+                            last_exc = None
                             break
-                        if timings["llm_first_token_ms"] is None and token:
-                            timings["llm_first_token_ms"] = (time.perf_counter() - llm_start) * 1000.0
-                        collected_tokens.append(token)
-                        await self.send_json({"type": "llm_token", "token": token})
+                        except TRANSIENT_LLM_ERRORS as exc:
+                            last_exc = exc
+                            if any_token_emitted or self._cancel_event.is_set():
+                                raise
+                            is_timeout = isinstance(exc, LLMTimeoutError)
+                            allowed_retries = max_timeout_retries if is_timeout else max_transient_retries
 
-                        for sentence in splitter.feed(token):
-                            if timings["first_sentence_queued_perf"] is None:
-                                timings["first_sentence_queued_perf"] = time.perf_counter()
-                            await sentence_queue.put(sentence)
+                            if not using_fallback and primary_attempt < allowed_retries:
+                                primary_attempt += 1
+                                turn_meta["retry_count"] = primary_attempt
+                                backoff_s = 0.25 if is_timeout else 0.5 * (2 ** (primary_attempt - 1))
+                                logger.warning(
+                                    f"LLM failed on model={candidate_model} retry_count={primary_attempt} "
+                                    f"error={exc}; retrying in {backoff_s:.2f}s"
+                                )
+                                await asyncio.sleep(backoff_s)
+                                continue
 
-                    for sentence in splitter.flush():
-                        if timings["first_sentence_queued_perf"] is None:
-                            timings["first_sentence_queued_perf"] = time.perf_counter()
-                        await sentence_queue.put(sentence)
+                            if not using_fallback and fallback_model:
+                                logger.warning(
+                                    f"LLM failed on model={candidate_model} retry_count={turn_meta['retry_count']} "
+                                    f"error={exc}; switching to fallback_model={fallback_model}"
+                                )
+                                using_fallback = True
+                                candidate_model = fallback_model
+                                continue
 
-                    timings["llm_total_ms"] = (time.perf_counter() - llm_start) * 1000.0
+                            logger.error(
+                                f"LLM failed on model={candidate_model} retry_count={turn_meta['retry_count']} "
+                                f"error={exc}; no retries/fallback remaining"
+                            )
+                            raise
+                    if last_exc is not None:
+                        raise last_exc
                 finally:
                     await sentence_queue.put(None)
 
@@ -358,6 +471,13 @@ class VoiceOrchestrator:
                 "e2e_latency_ms": metrics.e2e_latency_ms,
             })
 
+            # Log per-turn diagnostics
+            logger.info(
+                f"VoiceTurn session={self.session_id} transcript={user_text!r} "
+                f"stt_avg_logprob={stt_result.avg_logprob} model_used={turn_meta['model_used']} "
+                f"retry_count={turn_meta['retry_count']}"
+            )
+
             # Transition: THINKING|SPEAKING -> LISTENING once full turn response finishes
             if self._state in (VoiceState.SPEAKING, VoiceState.THINKING):
                 await self.transition(VoiceState.LISTENING, reason="turn_complete")
@@ -366,22 +486,71 @@ class VoiceOrchestrator:
             logger.info(f"Turn task cancelled in session {self.session_id}")
             raise
         except LLMAuthenticationError as exc:
-            await self.send_json({"type": "error", "code": "AUTH_ERROR", "message": str(exc)})
-            if self._state != VoiceState.IDLE:
-                await self.transition(VoiceState.LISTENING, reason="llm_auth_error")
+            await self._handle_turn_failure("AUTH_ERROR", str(exc), user_text=locals().get("user_text"), stt_result=locals().get("stt_result"), turn_meta=locals().get("turn_meta"))
         except LLMRateLimitError as exc:
-            await self.send_json({"type": "error", "code": "RATE_LIMIT", "message": str(exc)})
-            if self._state != VoiceState.IDLE:
-                await self.transition(VoiceState.LISTENING, reason="llm_rate_limit")
+            await self._handle_turn_failure("RATE_LIMIT", str(exc), user_text=locals().get("user_text"), stt_result=locals().get("stt_result"), turn_meta=locals().get("turn_meta"))
         except LLMTimeoutError as exc:
-            await self.send_json({"type": "error", "code": "TIMEOUT", "message": str(exc)})
-            if self._state != VoiceState.IDLE:
-                await self.transition(VoiceState.LISTENING, reason="llm_timeout")
+            await self._handle_turn_failure("TIMEOUT", str(exc), user_text=locals().get("user_text"), stt_result=locals().get("stt_result"), turn_meta=locals().get("turn_meta"))
+        except LLMServiceUnavailableError as exc:
+            await self._handle_turn_failure("SERVICE_UNAVAILABLE", str(exc), user_text=locals().get("user_text"), stt_result=locals().get("stt_result"), turn_meta=locals().get("turn_meta"))
         except Exception as exc:
             logger.error(f"Voice turn error in session {self.session_id}: {exc}")
-            await self.send_json({"type": "error", "code": "PIPELINE_ERROR", "message": str(exc)})
-            if self._state != VoiceState.IDLE:
-                await self.transition(VoiceState.LISTENING, reason="pipeline_error")
+            await self._handle_turn_failure("PIPELINE_ERROR", str(exc), user_text=locals().get("user_text"), stt_result=locals().get("stt_result"), turn_meta=locals().get("turn_meta"))
+
+    async def _handle_turn_failure(
+        self,
+        code: str,
+        message: str,
+        user_text: Optional[str] = None,
+        stt_result: Any = None,
+        turn_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Reports error to UI, shows & speaks fallback line via TTS, and returns to LISTENING."""
+        meta = turn_meta or {"model_used": self.agent.llm_model, "retry_count": 0}
+        avg_lp = getattr(stt_result, "avg_logprob", None) if stt_result is not None else None
+        logger.warning(
+            f"VoiceTurn failed session={self.session_id} code={code} transcript={user_text!r} "
+            f"stt_avg_logprob={avg_lp} model_used={meta.get('model_used')} "
+            f"retry_count={meta.get('retry_count')} error={message}"
+        )
+        await self.send_json({"type": "error", "code": code, "message": message})
+        await self.send_json({
+            "type": "transcript",
+            "role": "assistant",
+            "text": FALLBACK_ERROR_SPEECH,
+        })
+        await self._speak_fallback_line(FALLBACK_ERROR_SPEECH)
+        if self._state != VoiceState.IDLE:
+            await self.transition(VoiceState.LISTENING, reason=f"fallback_{code.lower()}")
+
+    async def _speak_fallback_line(self, text: str) -> None:
+        """Synthesizes and streams a short spoken fallback prompt on pipeline failure."""
+        if self._cancel_event.is_set():
+            return
+        sent_header = False
+        try:
+            async for chunk in self.tts.synthesize_stream(
+                text,
+                voice=self.agent.tts_voice,
+                cancel_event=self._cancel_event,
+            ):
+                if self._cancel_event.is_set():
+                    break
+                if not sent_header:
+                    if self._state == VoiceState.THINKING:
+                        await self.transition(VoiceState.SPEAKING, reason="tts_fallback_audio")
+                    await self.send_json({
+                        "type": "audio_start",
+                        "sentence_index": 0,
+                        "text": text,
+                        "format": "mp3",
+                    })
+                    sent_header = True
+                await self.send_bytes(chunk)
+            if sent_header:
+                await self.send_json({"type": "audio_end", "sentence_index": 0})
+        except Exception as tts_exc:
+            logger.warning(f"Fallback TTS playback failed in session {self.session_id}: {tts_exc}")
 
     async def _persist_turn(
         self,

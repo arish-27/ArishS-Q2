@@ -139,6 +139,8 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
 
     try:
         llm = get_llm_provider(agent.llm_provider, api_key or "")
+        if hasattr(llm, "thinking_level"):
+            llm.thinking_level = "minimal"
         stt = get_stt_provider(agent.stt_provider)
         tts = get_tts_provider(agent.tts_provider)
         vad = StreamingVAD(

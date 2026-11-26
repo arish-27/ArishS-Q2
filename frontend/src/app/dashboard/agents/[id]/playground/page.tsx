@@ -356,6 +356,13 @@ export default function VoicePlaygroundPage() {
 
             case 'error':
               setWsError({ code: msg.code, message: msg.message });
+              if (activeStreamMsgIdRef.current) {
+                const failedId = activeStreamMsgIdRef.current;
+                setTranscripts((prev) =>
+                  prev.map((m) => (m.id === failedId ? { ...m, streaming: false } : m))
+                );
+                activeStreamMsgIdRef.current = null;
+              }
               pushDebug('error', `${msg.code}: ${msg.message}`);
               break;
           }

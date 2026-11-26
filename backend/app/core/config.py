@@ -44,7 +44,8 @@ class Settings(BaseSettings):
 
     # AI Defaults (Active non-retired models only - verified against Nov 2026 docs)
     DEFAULT_LLM_PROVIDER: str = "gemini"
-    DEFAULT_GEMINI_MODEL: str = "gemini-4-hydrogen"
+    DEFAULT_GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    DEFAULT_GEMINI_FALLBACK_MODEL: str = "gemini-3.8-flash"
     DEFAULT_OPENAI_MODEL: str = "gpt-6-luna"
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
@@ -52,12 +53,14 @@ class Settings(BaseSettings):
     # Context window & token management
     CONTEXT_WINDOW_TURNS: int = 6
     CONTEXT_TOKEN_BUDGET: int = 2000
+    LLM_FIRST_TOKEN_TIMEOUT_S: float = 8.0
 
     # Speech, STT & TTS Defaults
     DEFAULT_STT_PROVIDER: str = "faster-whisper"
-    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_MODEL_SIZE: str = "small"
     WHISPER_COMPUTE_TYPE: str = "int8"
     WHISPER_DEVICE: str = "cpu"
+    WHISPER_WARMUP_ON_STARTUP: bool = True
     DEFAULT_TTS_PROVIDER: str = "edge-tts"
     DEFAULT_TTS_VOICE: str = "en-US-GuyNeural"
 

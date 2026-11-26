@@ -2,8 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
+from app.core.logger import logger
 from app.api.router import api_router
 from app.core.database import engine, Base
+from app.providers.stt.faster_whisper_provider import warmup_whisper_model
 from app.services.rate_limiter import rate_limiter
 import app.models  # Load all models
 
@@ -17,7 +19,19 @@ async def lifespan(app: FastAPI):
         if conn.dialect.name == "sqlite":
             await conn.run_sync(Base.metadata.create_all)
     await rate_limiter.get_backend_status()
+    warmup_task = None
+    if settings.WHISPER_WARMUP_ON_STARTUP and settings.DEFAULT_STT_PROVIDER == "faster-whisper":
+        async def _safe_warmup():
+            try:
+                await warmup_whisper_model()
+            except Exception as exc:
+                logger.warning(f"faster-whisper startup warmup skipped: {exc}")
+
+        import asyncio
+        warmup_task = asyncio.create_task(_safe_warmup())
     yield
+    if warmup_task and not warmup_task.done():
+        warmup_task.cancel()
     await rate_limiter.close()
     await engine.dispose()
 

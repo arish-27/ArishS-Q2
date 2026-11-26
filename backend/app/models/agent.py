@@ -28,7 +28,7 @@ class Agent(Base):
 
     # Model & Provider Configuration
     llm_provider = Column(String(50), default="gemini", nullable=False)  # 'gemini', 'openai'
-    llm_model = Column(String(100), default="gemini-4-hydrogen", nullable=False)
+    llm_model = Column(String(100), default="gemini-3.5-flash-lite", nullable=False)
     temperature = Column(Float, default=0.7, nullable=False)
 
     # STT & TTS Configuration

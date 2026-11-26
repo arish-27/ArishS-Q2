@@ -21,12 +21,13 @@ def clean_for_tts(text: str) -> str:
 
 class StreamingSentenceSplitter:
     """
-    Buffers streamed LLM tokens and emits complete speakable sentences
-    as soon as sentence boundaries appear, enabling sentence-level TTS streaming.
+    Buffers streamed LLM tokens and emits complete speakable sentences or clauses
+    as soon as boundaries appear, enabling low-latency sentence-level TTS streaming.
     """
 
-    def __init__(self, min_sentence_chars: int = 12):
+    def __init__(self, min_sentence_chars: int = 12, min_clause_words: int = 8):
         self.min_sentence_chars = min_sentence_chars
+        self.min_clause_words = min_clause_words
         self._buffer = ""
 
     def _is_real_boundary(self, text: str, idx: int) -> bool:
@@ -38,10 +39,15 @@ class StreamingSentenceSplitter:
         if ch == "\n":
             return True
 
-        # Avoid splitting decimal numbers like 3.14
-        if ch == "." and idx > 0 and text[idx - 1].isdigit():
+        # Avoid splitting decimal numbers like 3.14 or grouped numbers like 1,000
+        if ch in (".", ",") and idx > 0 and text[idx - 1].isdigit():
             if idx + 1 < len(text) and text[idx + 1].isdigit():
                 return False
+
+        # Clause boundary (comma/semicolon/colon): split once enough words accumulated
+        if ch in (",", ";", ":"):
+            words = text[: idx + 1].strip().split()
+            return len(words) >= self.min_clause_words
 
         # Avoid splitting common abbreviations like "Dr. Smith"
         prefix = text[: idx + 1].lower().rstrip()
@@ -52,7 +58,7 @@ class StreamingSentenceSplitter:
         return len(candidate) >= self.min_sentence_chars
 
     def feed(self, token: str) -> List[str]:
-        """Appends a streamed token and returns any newly completed sentences."""
+        """Appends a streamed token and returns any newly completed sentences or clauses."""
         if not token:
             return []
         self._buffer += token
@@ -61,7 +67,7 @@ class StreamingSentenceSplitter:
         while True:
             split_pos = -1
             for i, ch in enumerate(self._buffer):
-                if ch in (".", "!", "?", "\n") and self._is_real_boundary(self._buffer, i):
+                if ch in (".", "!", "?", "\n", ",", ";", ":") and self._is_real_boundary(self._buffer, i):
                     split_pos = i
                     break
 

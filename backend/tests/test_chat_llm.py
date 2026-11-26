@@ -123,13 +123,14 @@ def test_chat_endpoint_streaming_and_isolation(server):
     agent_a = json.loads(agent_raw)
     agent_id = agent_a["id"]
 
-    # Case A: Chat without API key in vault -> clear 400 Bad Request
-    status_nokey, _, res_nokey = http_request(
-        f"{server}/api/v1/chat/{agent_id}",
-        method="POST",
-        data={"message": "Hello without key"},
-        token=token_a
-    )
+    # Case A: Chat without API key in vault (and no env fallback) -> clear 400 Bad Request
+    with patch("app.api.v1.chat.settings.GEMINI_API_KEY", None):
+        status_nokey, _, res_nokey = http_request(
+            f"{server}/api/v1/chat/{agent_id}",
+            method="POST",
+            data={"message": "Hello without key"},
+            token=token_a
+        )
     assert status_nokey == 400
     assert "No API key found" in res_nokey["detail"]
 

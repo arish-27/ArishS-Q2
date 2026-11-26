@@ -17,6 +17,10 @@ class LLMTimeoutError(LLMProviderError):
     """Raised when provider request times out."""
     pass
 
+class LLMServiceUnavailableError(LLMProviderError):
+    """Raised when provider returns transient 502/503/504 service unavailable."""
+    pass
+
 class BaseLLMProvider(ABC):
     """
     Abstract interface for LLM providers (Gemini, OpenAI).

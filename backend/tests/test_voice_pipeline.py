@@ -14,7 +14,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from app.core.config import settings
 from app.models.agent import Agent
 from app.providers.embeddings.gemini_embedding import GeminiEmbeddingProvider
-from app.providers.llm.base import BaseLLMProvider
+from app.providers.llm.base import BaseLLMProvider, LLMServiceUnavailableError
 from app.providers.stt.base import BaseSTTProvider, STTResult
 from app.providers.tts.base import BaseTTSProvider
 from app.services.rate_limiter import RateLimiter
@@ -422,3 +422,257 @@ def test_websocket_auth_rejection_isolation_and_pipeline(server):
                 assert err_frame["code"] == "MESSAGE_TOO_LARGE"
 
     asyncio.run(run_ws_checks())
+
+
+# ==============================================================================
+# 5. Comma Clause Splitting, Low-Confidence STT Drop, Retry/Fallback & Spoken Error
+# ==============================================================================
+
+def test_sentence_splitter_splits_clause_on_comma_after_8_words():
+    splitter = StreamingSentenceSplitter(min_sentence_chars=12, min_clause_words=8)
+    # Short comma (< 8 words) should NOT split early
+    assert splitter.feed("Hello there, ") == []
+    # Reaching >= 8 words before comma SHOULD split
+    emitted = splitter.feed("how are you doing on this fine morning, my friend.")
+    assert emitted == ["Hello there, how are you doing on this fine morning,"]
+    flushed = splitter.flush()
+    assert flushed == ["my friend."]
+
+
+@pytest.mark.anyio
+async def test_orchestrator_drops_low_confidence_or_short_stt():
+    class LowConfSTT(BaseSTTProvider):
+        async def transcribe(self, audio_pcm16: bytes, sample_rate: int = 16000, language: str = "en") -> STTResult:
+            return STTResult(text=".", language="en", duration_ms=400.0, latency_ms=10.0, avg_logprob=-1.4)
+
+    class FailIfCalledLLM(BaseLLMProvider):
+        async def generate_stream(self, messages, system_prompt="", temperature=0.7, model=""):
+            raise AssertionError("LLM should not be called for low-confidence/empty transcript")
+            yield ""
+
+    events = []
+
+    async def send_json(data):
+        events.append(data)
+
+    async def send_bytes(data):
+        pass
+
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        name="DropCheck",
+        slug="dropcheck",
+        system_prompt="Be concise.",
+        llm_provider="gemini",
+        llm_model="gemini-3.5-flash-lite",
+        temperature=0.5,
+        stt_provider="faster-whisper",
+        stt_language="en",
+        tts_provider="edge-tts",
+        tts_voice="en-US-GuyNeural",
+    )
+    orch = VoiceOrchestrator(
+        agent=agent,
+        session_id=str(uuid.uuid4()),
+        llm_provider=FailIfCalledLLM(api_key="mock"),
+        stt_provider=LowConfSTT(),
+        tts_provider=MockTTS(),
+        vad=StreamingVAD(backend="webrtcvad"),
+        send_json=send_json,
+        send_bytes=send_bytes,
+    )
+    await orch.start_listening()
+    await orch.transition(VoiceState.THINKING, reason="test")
+    await orch._execute_turn(b"\x01\x00" * 3200, 200.0)
+    assert orch.state == VoiceState.LISTENING
+    assert not any(ev.get("type") == "transcript" for ev in events)
+
+
+@pytest.mark.anyio
+async def test_orchestrator_retries_and_falls_back_on_503():
+    calls = []
+
+    class Flaky503ThenFallbackLLM(BaseLLMProvider):
+        async def generate_stream(self, messages, system_prompt="", temperature=0.7, model=""):
+            calls.append(model)
+            if model == "gemini-3.5-flash-lite":
+                raise LLMServiceUnavailableError("Gemini 503")
+            yield "Hello from fallback."
+
+    events = []
+    audio_out = bytearray()
+
+    async def send_json(data):
+        events.append(data)
+
+    async def send_bytes(data):
+        audio_out.extend(data)
+
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        name="FallbackBot",
+        slug="fallbackbot",
+        system_prompt="Be helpful.",
+        llm_provider="gemini",
+        llm_model="gemini-3.5-flash-lite",
+        temperature=0.5,
+        stt_provider="faster-whisper",
+        stt_language="en",
+        tts_provider="edge-tts",
+        tts_voice="en-US-GuyNeural",
+    )
+    orch = VoiceOrchestrator(
+        agent=agent,
+        session_id=str(uuid.uuid4()),
+        llm_provider=Flaky503ThenFallbackLLM(api_key="mock"),
+        stt_provider=MockSTT("Hello there"),
+        tts_provider=MockTTS(),
+        vad=StreamingVAD(backend="webrtcvad"),
+        send_json=send_json,
+        send_bytes=send_bytes,
+    )
+    orch._persist_turn = AsyncMock()
+    await orch.start_listening()
+    await orch.transition(VoiceState.THINKING, reason="test")
+
+    with patch("app.services.voice_orchestrator.asyncio.sleep", new=AsyncMock()):
+        await orch._execute_turn(b"\x01\x00" * 8000, 500.0)
+
+    # Primary retried 2 times (3 total calls) + 1 fallback call to gemini-3.8-flash
+    assert calls == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+    ]
+    assert orch.state == VoiceState.LISTENING
+    assert any(ev.get("type") == "transcript" and ev.get("role") == "assistant" and "fallback" in ev.get("text", "") for ev in events)
+    assert len(audio_out) > 0
+
+
+@pytest.mark.anyio
+async def test_orchestrator_speaks_fallback_error_when_all_models_fail():
+    class AlwaysFailLLM(BaseLLMProvider):
+        async def generate_stream(self, messages, system_prompt="", temperature=0.7, model=""):
+            raise LLMServiceUnavailableError("All Gemini models down (503)")
+            yield ""
+
+    events = []
+    audio_out = bytearray()
+
+    async def send_json(data):
+        events.append(data)
+
+    async def send_bytes(data):
+        audio_out.extend(data)
+
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        name="ErrorBot",
+        slug="errorbot",
+        system_prompt="Be helpful.",
+        llm_provider="gemini",
+        llm_model="gemini-3.5-flash-lite",
+        temperature=0.5,
+        stt_provider="faster-whisper",
+        stt_language="en",
+        tts_provider="edge-tts",
+        tts_voice="en-US-GuyNeural",
+    )
+    orch = VoiceOrchestrator(
+        agent=agent,
+        session_id=str(uuid.uuid4()),
+        llm_provider=AlwaysFailLLM(api_key="mock"),
+        stt_provider=MockSTT("Hello there"),
+        tts_provider=MockTTS(),
+        vad=StreamingVAD(backend="webrtcvad"),
+        send_json=send_json,
+        send_bytes=send_bytes,
+    )
+    await orch.start_listening()
+    await orch.transition(VoiceState.THINKING, reason="test")
+
+    with patch("app.services.voice_orchestrator.asyncio.sleep", new=AsyncMock()):
+        await orch._execute_turn(b"\x01\x00" * 8000, 500.0)
+
+    assert orch.state == VoiceState.LISTENING
+    assert any(ev.get("type") == "error" and ev.get("code") == "SERVICE_UNAVAILABLE" for ev in events)
+    assert any(
+        ev.get("type") == "transcript"
+        and ev.get("role") == "assistant"
+        and ev.get("text") == "Sorry, I had trouble. Could you repeat that?"
+        for ev in events
+    )
+    assert len(audio_out) > 0
+
+
+@pytest.mark.anyio
+async def test_orchestrator_first_token_timeout_retries_once_then_fallback():
+    calls = []
+
+    class SlowTimeoutLLM(BaseLLMProvider):
+        async def generate_stream(self, messages, system_prompt="", temperature=0.7, model=""):
+            calls.append(model)
+            await asyncio.Event().wait()
+            yield "Too late"
+
+    events = []
+    audio_out = bytearray()
+
+    async def send_json(data):
+        events.append(data)
+
+    async def send_bytes(data):
+        audio_out.extend(data)
+
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        name="TimeoutBot",
+        slug="timeoutbot",
+        system_prompt="Be helpful.",
+        llm_provider="gemini",
+        llm_model="gemini-3.5-flash-lite",
+        temperature=0.5,
+        stt_provider="faster-whisper",
+        stt_language="en",
+        tts_provider="edge-tts",
+        tts_voice="en-US-GuyNeural",
+    )
+    orch = VoiceOrchestrator(
+        agent=agent,
+        session_id=str(uuid.uuid4()),
+        llm_provider=SlowTimeoutLLM(api_key="mock"),
+        stt_provider=MockSTT("Hello there"),
+        tts_provider=MockTTS(),
+        vad=StreamingVAD(backend="webrtcvad"),
+        send_json=send_json,
+        send_bytes=send_bytes,
+    )
+    await orch.start_listening()
+    await orch.transition(VoiceState.THINKING, reason="test")
+
+    with (
+        patch.object(settings, "LLM_FIRST_TOKEN_TIMEOUT_S", 0.05),
+        patch("app.services.voice_orchestrator.asyncio.sleep", new=AsyncMock()),
+    ):
+        await orch._execute_turn(b"\x01\x00" * 8000, 500.0)
+
+    # On timeout: initial + 1 retry on primary, then 1 attempt on fallback gemini-3.8-flash
+    assert calls == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+    ]
+    assert orch.state == VoiceState.LISTENING
+    assert any(ev.get("type") == "error" and ev.get("code") == "TIMEOUT" for ev in events)
+    assert any(
+        ev.get("type") == "transcript"
+        and ev.get("role") == "assistant"
+        and ev.get("text") == "Sorry, I had trouble. Could you repeat that?"
+        for ev in events
+    )
+    assert len(audio_out) > 0

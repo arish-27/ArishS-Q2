@@ -1,11 +1,12 @@
 import json
 import httpx
-from typing import AsyncIterator, List, Dict
+from typing import AsyncIterator, List, Dict, Optional
 from app.providers.llm.base import (
     BaseLLMProvider,
     LLMProviderError,
     LLMAuthenticationError,
     LLMRateLimitError,
+    LLMServiceUnavailableError,
     LLMTimeoutError
 )
 from app.core.logger import logger
@@ -16,8 +17,12 @@ class GeminiProvider(BaseLLMProvider):
     Uses official Gemini REST SSE streamGenerateContent endpoint.
     """
 
-    DEFAULT_MODEL = "gemini-4-hydrogen"
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    def __init__(self, api_key: str, thinking_level: Optional[str] = None):
+        super().__init__(api_key)
+        self.thinking_level = thinking_level
 
     async def generate_stream(
         self,
@@ -38,11 +43,17 @@ class GeminiProvider(BaseLLMProvider):
                 "parts": [{"text": msg["content"]}]
             })
 
+        generation_config: Dict[str, any] = {
+            "temperature": max(0.0, min(2.0, temperature)),
+        }
+        if self.thinking_level:
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": self.thinking_level
+            }
+
         payload: Dict[str, any] = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": max(0.0, min(2.0, temperature)),
-            }
+            "generationConfig": generation_config,
         }
 
         if system_prompt:
@@ -64,6 +75,16 @@ class GeminiProvider(BaseLLMProvider):
                         error_body = await response.aread()
                         logger.warning(f"Gemini rate limit exceeded: {error_body.decode('utf-8', errors='ignore')}")
                         raise LLMRateLimitError("Gemini API quota or rate limit exceeded.")
+
+                    if response.status_code in (502, 503, 504):
+                        error_body = await response.aread()
+                        logger.warning(
+                            f"Gemini service unavailable ({response.status_code}): "
+                            f"{error_body.decode('utf-8', errors='ignore')}"
+                        )
+                        raise LLMServiceUnavailableError(
+                            f"Gemini API temporarily unavailable (HTTP {response.status_code})."
+                        )
 
                     if response.status_code != 200:
                         error_body = await response.aread()
