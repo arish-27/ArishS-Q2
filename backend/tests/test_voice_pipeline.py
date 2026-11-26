@@ -58,7 +58,7 @@ def _generate_synthetic_speech_pcm16(duration_s: float = 1.5, sample_rate: int =
     formants = 0.5 * np.sin(np.cumsum(2 * np.pi * f1 / sample_rate)) + 0.3 * np.sin(
         np.cumsum(2 * np.pi * f2 / sample_rate)
     )
-    env = np.clip(np.sin(2 * np.pi * 3.5 * t) + 0.3, 0, 1)
+    env = np.clip(np.sin(2 * np.pi * 3.5 * t) + 0.65, 0.25, 1.0)
     sig = env * (0.6 * glottal + 0.4 * formants)
     return (np.clip(sig, -1.0, 1.0) * 18000).astype(np.int16).tobytes()
 
@@ -609,6 +609,82 @@ async def test_orchestrator_speaks_fallback_error_when_all_models_fail():
     assert len(audio_out) > 0
 
 
+# ==============================================================================
+# 6. VAD Noise Robustness: Constant Noise, Hysteresis Silence & Max Cap
+# ==============================================================================
+
+def test_vad_constant_noise_never_starts_utterance():
+    vad = StreamingVAD(
+        sample_rate=16000,
+        silence_threshold_ms=700,
+        speech_start_threshold=0.6,
+        speech_end_threshold=0.45,
+        energy_multiplier=2.0,
+        min_speech_ms=200,
+        backend="silero-onnx",
+    )
+    rng = np.random.default_rng(42)
+    # 3 seconds of steady background white/pink-like noise (RMS ~0.015)
+    noise = (rng.normal(0.0, 0.015, 16000 * 3) * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
+    events = []
+    for i in range(0, len(noise), 1024):
+        events.extend(vad.process_chunk(noise[i : i + 1024]))
+
+    assert not any(ev.speech_start for ev in events)
+    assert not any(ev.utterance_pcm16 is not None for ev in events)
+
+
+def test_vad_speech_followed_by_mid_noise_ends_by_silence_timer():
+    vad = StreamingVAD(
+        sample_rate=16000,
+        silence_threshold_ms=500,
+        speech_start_threshold=0.6,
+        speech_end_threshold=0.45,
+        energy_multiplier=2.0,
+        min_speech_ms=200,
+        backend="silero-onnx",
+    )
+    speech = _generate_synthetic_speech_pcm16(duration_s=1.0)
+    mid_noise = np.zeros(16000, dtype=np.int16).tobytes()
+
+    # Simulate Silero returning 0.85 during speech and 0.50 (between 0.45 and 0.60) during trailing noise.
+    # Silence timer must NOT reset on 0.50, so utterance ends via silence timer!
+    probs = [0.85] * 32 + [0.50] * 32
+    with patch.object(vad, "_score_frame", side_effect=probs):
+        events = []
+        for chunk in (speech, mid_noise):
+            for i in range(0, len(chunk), 1024):
+                events.extend(vad.process_chunk(chunk[i : i + 1024]))
+
+    assert any(ev.speech_start for ev in events)
+    completed = [ev for ev in events if ev.utterance_pcm16 is not None]
+    assert len(completed) == 1
+    assert completed[0].end_reason == "silence"
+    assert completed[0].avg_prob > 0.0
+
+
+def test_vad_max_utterance_cap_triggers():
+    vad = StreamingVAD(
+        sample_rate=16000,
+        silence_threshold_ms=700,
+        speech_start_threshold=0.6,
+        speech_end_threshold=0.45,
+        energy_multiplier=2.0,
+        min_speech_ms=200,
+        backend="silero-onnx",
+        max_utterance_seconds=2,
+    )
+    long_speech = _generate_synthetic_speech_pcm16(duration_s=3.5)
+    with patch.object(vad, "_score_frame", return_value=0.90):
+        events = []
+        for i in range(0, len(long_speech), 1024):
+            events.extend(vad.process_chunk(long_speech[i : i + 1024]))
+
+    completed = [ev for ev in events if ev.utterance_pcm16 is not None]
+    assert len(completed) >= 1
+    assert completed[0].end_reason == "max_cap"
+
+
 @pytest.mark.anyio
 async def test_orchestrator_first_token_timeout_retries_once_then_fallback():
     calls = []
@@ -676,3 +752,79 @@ async def test_orchestrator_first_token_timeout_retries_once_then_fallback():
         for ev in events
     )
     assert len(audio_out) > 0
+
+
+# ==============================================================================
+# 6. VAD Noise Robustness: Constant Noise, Hysteresis Silence & Max Cap
+# ==============================================================================
+
+def test_vad_constant_noise_never_starts_utterance():
+    vad = StreamingVAD(
+        sample_rate=16000,
+        silence_threshold_ms=700,
+        speech_start_threshold=0.6,
+        speech_end_threshold=0.45,
+        energy_multiplier=2.0,
+        min_speech_ms=200,
+        backend="silero-onnx",
+    )
+    rng = np.random.default_rng(42)
+    # 3 seconds of steady background white/pink-like noise (RMS ~0.015)
+    noise = (rng.normal(0.0, 0.015, 16000 * 3) * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
+    events = []
+    for i in range(0, len(noise), 1024):
+        events.extend(vad.process_chunk(noise[i : i + 1024]))
+
+    assert not any(ev.speech_start for ev in events)
+    assert not any(ev.utterance_pcm16 is not None for ev in events)
+
+
+def test_vad_speech_followed_by_mid_noise_ends_by_silence_timer():
+    vad = StreamingVAD(
+        sample_rate=16000,
+        silence_threshold_ms=500,
+        speech_start_threshold=0.6,
+        speech_end_threshold=0.45,
+        energy_multiplier=2.0,
+        min_speech_ms=200,
+        backend="silero-onnx",
+    )
+    speech = _generate_synthetic_speech_pcm16(duration_s=1.0)
+    mid_noise = np.zeros(16000, dtype=np.int16).tobytes()
+
+    # Simulate Silero returning 0.85 during speech and 0.50 (between 0.45 and 0.60) during trailing noise.
+    # Silence timer must NOT reset on 0.50, so utterance ends via silence timer!
+    probs = [0.85] * 32 + [0.50] * 32
+    with patch.object(vad, "_score_frame", side_effect=probs):
+        events = []
+        for chunk in (speech, mid_noise):
+            for i in range(0, len(chunk), 1024):
+                events.extend(vad.process_chunk(chunk[i : i + 1024]))
+
+    assert any(ev.speech_start for ev in events)
+    completed = [ev for ev in events if ev.utterance_pcm16 is not None]
+    assert len(completed) == 1
+    assert completed[0].end_reason == "silence"
+    assert completed[0].avg_prob > 0.0
+
+
+def test_vad_max_utterance_cap_triggers():
+    vad = StreamingVAD(
+        sample_rate=16000,
+        silence_threshold_ms=700,
+        speech_start_threshold=0.6,
+        speech_end_threshold=0.45,
+        energy_multiplier=2.0,
+        min_speech_ms=200,
+        backend="silero-onnx",
+        max_utterance_seconds=2,
+    )
+    long_speech = _generate_synthetic_speech_pcm16(duration_s=3.5)
+    with patch.object(vad, "_score_frame", return_value=0.90):
+        events = []
+        for i in range(0, len(long_speech), 1024):
+            events.extend(vad.process_chunk(long_speech[i : i + 1024]))
+
+    completed = [ev for ev in events if ev.utterance_pcm16 is not None]
+    assert len(completed) >= 1
+    assert completed[0].end_reason == "max_cap"

@@ -113,6 +113,7 @@ class VoiceOrchestrator:
         self._turn_task: Optional[asyncio.Task] = None
         self._cancel_event: asyncio.Event = asyncio.Event()
         self._state_lock = asyncio.Lock()
+        self._vad_prob_frame_counter: int = 0
 
     @property
     def state(self) -> VoiceState:
@@ -194,6 +195,14 @@ class VoiceOrchestrator:
                 await self.barge_in()
                 await self.send_json({"type": "vad_speech_start", "barge_in": True})
             return
+
+        self._vad_prob_frame_counter += 1
+        if self._vad_prob_frame_counter % 3 == 0:
+            await self.send_json({
+                "type": "vad_prob",
+                "prob": round(self.vad.last_prob, 3),
+                "noise_floor": round(self.vad.noise_floor_rms, 5),
+            })
 
         for ev in events:
             if ev.speech_start:

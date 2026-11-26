@@ -55,6 +55,12 @@ interface DebugEvent {
   summary: string;
 }
 
+const NOISE_PRESETS = {
+  low: { speech_start_threshold: 0.72, speech_end_threshold: 0.55, energy_multiplier: 2.5 },
+  medium: { speech_start_threshold: 0.6, speech_end_threshold: 0.45, energy_multiplier: 2.0 },
+  high: { speech_start_threshold: 0.45, speech_end_threshold: 0.32, energy_multiplier: 1.5 },
+} as const;
+
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/api/v1/voice/stream';
 
 export default function VoicePlaygroundPage() {
@@ -71,6 +77,8 @@ export default function VoicePlaygroundPage() {
   const [isMuted, setIsMuted] = useState(false);
   const [voiceState, setVoiceState] = useState<OrchestratorState>('IDLE');
   const [vadSpeechActive, setVadSpeechActive] = useState(false);
+  const [vadProb, setVadProb] = useState(0);
+  const [noiseSensitivity, setNoiseSensitivity] = useState<'low' | 'medium' | 'high'>('medium');
   const [micLevel, setMicLevel] = useState(0);
   const [silenceThresholdMs, setSilenceThresholdMs] = useState(700);
   const [runtimeInfo, setRuntimeInfo] = useState<{
@@ -225,7 +233,13 @@ export default function VoicePlaygroundPage() {
           };
 
           source.connect(workletNode);
-          ws.send(JSON.stringify({ type: 'config', silence_threshold_ms: silenceThresholdMs }));
+          ws.send(
+            JSON.stringify({
+              type: 'config',
+              silence_threshold_ms: silenceThresholdMs,
+              ...NOISE_PRESETS[noiseSensitivity],
+            })
+          );
           ws.send(JSON.stringify({ type: 'start' }));
         } catch (audioErr: any) {
           setWsError({ code: 'AUDIO_WORKLET', message: audioErr.message || 'Microphone AudioWorklet setup failed' });
@@ -267,6 +281,10 @@ export default function VoicePlaygroundPage() {
             case 'vad_speech_end':
               setVadSpeechActive(false);
               pushDebug('vad_speech_end', `Utterance duration ${msg.duration_ms}ms`);
+              break;
+
+            case 'vad_prob':
+              setVadProb(typeof msg.prob === 'number' ? msg.prob : 0);
               break;
 
             case 'transcript':
@@ -446,6 +464,14 @@ export default function VoicePlaygroundPage() {
     }
   };
 
+  const handleNoiseSensitivityChange = (level: 'low' | 'medium' | 'high') => {
+    setNoiseSensitivity(level);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'config', ...NOISE_PRESETS[level] }));
+      pushDebug('config', `Noise sensitivity=${level}`);
+    }
+  };
+
   // Compute running averages
   const assistantTurnsWithMetrics = transcripts.filter(
     (t) => t.role === 'assistant' && t.metrics && t.metrics.e2e_latency_ms !== undefined
@@ -610,23 +636,54 @@ export default function VoicePlaygroundPage() {
               </div>
             </div>
 
-            {/* Mic Energy Meter & VAD Config */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800/80">
+            {/* Mic Energy Meter, VAD Probability & Noise Sensitivity */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-800/80">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-400 flex items-center gap-1.5">
                     <Activity className="w-3.5 h-3.5 text-emerald-400" />
-                    16kHz PCM16 Mic Level
+                    Mic Level / VAD Prob
                   </span>
                   <span className={`text-[11px] font-mono ${vadSpeechActive ? 'text-emerald-400 font-semibold' : 'text-slate-500'}`}>
-                    {vadSpeechActive ? 'VAD: SPEECH ACTIVE' : 'VAD: SILENCE'}
+                    {vadSpeechActive ? 'SPEECH' : 'SILENCE'} ({Math.round(vadProb * 100)}%)
                   </span>
                 </div>
-                <div className="h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
-                  <div
-                    className={`h-full transition-all duration-75 ${vadSpeechActive ? 'bg-emerald-400' : 'bg-sky-500/70'}`}
-                    style={{ width: `${micLevel}%` }}
-                  />
+                <div className="space-y-1">
+                  <div className="h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                    <div
+                      className={`h-full transition-all duration-75 ${vadSpeechActive ? 'bg-emerald-400' : 'bg-sky-500/70'}`}
+                      style={{ width: `${micLevel}%` }}
+                    />
+                  </div>
+                  <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800" title="Live VAD Speech Probability">
+                    <div
+                      className={`h-full transition-all duration-75 ${vadProb >= NOISE_PRESETS[noiseSensitivity].speech_start_threshold ? 'bg-amber-400' : 'bg-purple-500/60'}`}
+                      style={{ width: `${Math.min(100, Math.round(vadProb * 100))}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-400">Noise Sensitivity</span>
+                  <span className="font-mono text-[11px] text-slate-500 capitalize">{noiseSensitivity}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  {(['low', 'medium', 'high'] as const).map((lvl) => (
+                    <button
+                      key={lvl}
+                      type="button"
+                      onClick={() => handleNoiseSensitivityChange(lvl)}
+                      className={`py-1 rounded-lg text-xs font-semibold capitalize transition ${
+                        noiseSensitivity === lvl
+                          ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {lvl}
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -634,7 +691,7 @@ export default function VoicePlaygroundPage() {
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-400 flex items-center gap-1.5">
                     <Sliders className="w-3.5 h-3.5 text-sky-400" />
-                    VAD End-of-Turn Silence
+                    End-of-Turn Silence
                   </span>
                   <span className="font-mono text-sky-400">{silenceThresholdMs} ms</span>
                 </div>

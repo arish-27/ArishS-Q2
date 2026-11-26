@@ -163,8 +163,11 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
         vad = StreamingVAD(
             sample_rate=16000,
             silence_threshold_ms=settings.VAD_SILENCE_THRESHOLD_MS,
-            speech_threshold=settings.VAD_SPEECH_THRESHOLD,
+            speech_start_threshold=settings.VAD_SPEECH_START_THRESHOLD,
+            speech_end_threshold=settings.VAD_SPEECH_END_THRESHOLD,
+            energy_multiplier=settings.VAD_ENERGY_MULTIPLIER,
             min_speech_ms=settings.VAD_MIN_SPEECH_MS,
+            max_utterance_seconds=settings.VAD_MAX_UTTERANCE_S,
         )
     except Exception as exc:
         logger.error(f"Voice pipeline initialization failed: {exc}")
@@ -291,12 +294,17 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
                     vad.update_config(
                         silence_threshold_ms=cmd.get("silence_threshold_ms"),
                         speech_threshold=cmd.get("speech_threshold"),
+                        speech_start_threshold=cmd.get("speech_start_threshold"),
+                        speech_end_threshold=cmd.get("speech_end_threshold"),
+                        energy_multiplier=cmd.get("energy_multiplier"),
                         min_speech_ms=cmd.get("min_speech_ms"),
                     )
                     await safe_send_json({
                         "type": "config_updated",
                         "silence_threshold_ms": vad.silence_threshold_ms,
-                        "speech_threshold": vad.speech_threshold,
+                        "speech_start_threshold": vad.speech_start_threshold,
+                        "speech_end_threshold": vad.speech_end_threshold,
+                        "energy_multiplier": vad.energy_multiplier,
                     })
                 elif action == "ping":
                     await safe_send_json({"type": "pong"})

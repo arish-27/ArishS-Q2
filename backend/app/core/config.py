@@ -67,10 +67,14 @@ class Settings(BaseSettings):
     DEFAULT_TTS_PROVIDER: str = "edge-tts"
     DEFAULT_TTS_VOICE: str = "en-US-GuyNeural"
 
-    # Server-Side VAD Settings
+    # Server-Side VAD Settings (with hysteresis, energy gate, and hard cap)
     VAD_SILENCE_THRESHOLD_MS: int = 700
-    VAD_SPEECH_THRESHOLD: float = 0.5
+    VAD_SPEECH_START_THRESHOLD: float = 0.6
+    VAD_SPEECH_END_THRESHOLD: float = 0.45
+    VAD_SPEECH_THRESHOLD: float = 0.6
+    VAD_ENERGY_MULTIPLIER: float = 2.0
     VAD_MIN_SPEECH_MS: int = 200
+    VAD_MAX_UTTERANCE_S: int = 12
     VAD_BARGE_IN_DEBOUNCE_MS: int = 250
 
     # Voice WebSocket Security & Rate Limiting
