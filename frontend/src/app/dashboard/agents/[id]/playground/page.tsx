@@ -93,7 +93,7 @@ export default function VoicePlaygroundPage() {
   const [vadProb, setVadProb] = useState(0);
   const [noiseSensitivity, setNoiseSensitivity] = useState<'low' | 'medium' | 'high'>('medium');
   const [micLevel, setMicLevel] = useState(0);
-  const [silenceThresholdMs, setSilenceThresholdMs] = useState(700);
+  const [silenceThresholdMs, setSilenceThresholdMs] = useState(550);
   const [runtimeInfo, setRuntimeInfo] = useState<{
     sessionId?: string;
     rateLimiterBackend?: string;

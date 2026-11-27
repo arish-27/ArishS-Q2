@@ -360,19 +360,23 @@ class VoiceOrchestrator:
                 model=self.agent.llm_model,
             )
 
-            # 1b. Fast RAG retrieval when agent has indexed knowledge documents
+            # 1b. Fast RAG retrieval when agent has indexed knowledge documents (skip when no KB)
             rag_context_block = ""
-            if self.rag_api_key or self.embedding_provider is not None:
+            retrieval_ms = 0.0
+            if (self.rag_api_key or self.embedding_provider is not None) and self.has_knowledge_base is not False:
+                rag_start = time.perf_counter()
                 try:
                     async with self.db_session_factory() as rag_db:
-                        has_doc = (
-                            await rag_db.execute(
-                                select(Document.id)
-                                .where(Document.agent_id == self.agent.id, Document.status == "indexed")
-                                .limit(1)
-                            )
-                        ).scalar_one_or_none()
-                        if has_doc:
+                        if self.has_knowledge_base is None:
+                            has_doc = (
+                                await rag_db.execute(
+                                    select(Document.id)
+                                    .where(Document.agent_id == self.agent.id, Document.status == "indexed")
+                                    .limit(1)
+                                )
+                            ).scalar_one_or_none()
+                            self.has_knowledge_base = bool(has_doc)
+                        if self.has_knowledge_base:
                             chunks = await retrieve_relevant_chunks(
                                 db=rag_db,
                                 agent_id=self.agent.id,
@@ -403,6 +407,8 @@ class VoiceOrchestrator:
                                 await self.send_json({"type": "rag_sources", "sources": rag_sources})
                 except Exception as rag_exc:
                     logger.warning(f"RAG retrieval skipped session={self.session_id}: {rag_exc}")
+                finally:
+                    retrieval_ms = (time.perf_counter() - rag_start) * 1000.0
 
             voice_system_prompt = (
                 f"{self.agent.system_prompt or ''}{rag_context_block}{VOICE_SYSTEM_PROMPT_ADDENDUM}"
@@ -719,6 +725,10 @@ class VoiceOrchestrator:
             logger.info(
                 f"VoiceTurn session={self.session_id} transcript={user_text!r} "
                 f"stt_provider={getattr(stt_result, 'provider', 'unknown')} "
+                f"end_of_turn_wait_ms={self.vad.silence_threshold_ms} "
+                f"stt_ms={metrics.stt_latency_ms} retrieval_ms={round(retrieval_ms, 2)} "
+                f"llm_ttft_ms={metrics.llm_first_token_ms} tts_first_audio_ms={metrics.tts_first_audio_ms} "
+                f"e2e_ms={metrics.e2e_latency_ms} "
                 f"stt_avg_logprob={stt_result.avg_logprob} model_used={turn_meta['model_used']} "
                 f"retry_count={turn_meta['retry_count']}"
             )

@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     DEFAULT_TTS_VOICE: str = "en-US-GuyNeural"
 
     # Server-Side VAD Settings (with hysteresis, energy gate, and hard cap)
-    VAD_SILENCE_THRESHOLD_MS: int = 700
+    VAD_SILENCE_THRESHOLD_MS: int = 550
     VAD_SPEECH_START_THRESHOLD: float = 0.5
     VAD_SPEECH_END_THRESHOLD: float = 0.35
     VAD_SPEECH_THRESHOLD: float = 0.5
