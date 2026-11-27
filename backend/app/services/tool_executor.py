@@ -3,6 +3,7 @@ import json
 import re
 import socket
 import time
+import zlib
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,7 +40,7 @@ BUILTIN_TOOL_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     "get_weather": {
         "name": "get_weather",
-        "description": "Returns current mock weather conditions for a city.",
+        "description": "Returns current live weather conditions for a city (with fallback).",
         "parameters_schema": json.dumps({
             "type": "object",
             "properties": {
@@ -206,6 +207,80 @@ _TZ_ALIASES = {
 }
 
 
+_WMO_CODES = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    80: "Rain showers",
+    95: "Thunderstorm",
+}
+
+
+def _mock_weather(loc: str, unit: str) -> Dict[str, Any]:
+    h = zlib.crc32(loc.strip().lower().encode("utf-8"))
+    temp_c = 20 + (h % 15)  # 20..34 C varied per location
+    temp = temp_c if unit == "celsius" else round(temp_c * 9 / 5 + 32, 1)
+    conditions = ["Clear sky", "Partly cloudy", "Humid and breezy", "Light drizzle", "Mostly sunny"]
+    return {
+        "location": loc,
+        "temperature": temp,
+        "unit": unit,
+        "condition": conditions[(h >> 4) % len(conditions)],
+        "humidity_pct": 45 + (h % 40),
+        "mock": True,
+    }
+
+
+async def _fetch_live_weather(loc: str, unit: str) -> Dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            geo_resp = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": loc, "count": 1, "language": "en", "format": "json"},
+            )
+            if geo_resp.status_code != 200:
+                return _mock_weather(loc, unit)
+            results = geo_resp.json().get("results") or []
+            if not results:
+                return _mock_weather(loc, unit)
+            place = results[0]
+            wx_resp = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": place["latitude"],
+                    "longitude": place["longitude"],
+                    "current": "temperature_2m,relative_humidity_2m,weather_code",
+                },
+            )
+            if wx_resp.status_code != 200:
+                return _mock_weather(loc, unit)
+            cur = wx_resp.json().get("current") or {}
+            temp_c = cur.get("temperature_2m")
+            if temp_c is None:
+                return _mock_weather(loc, unit)
+            temp = round(float(temp_c), 1) if unit == "celsius" else round(float(temp_c) * 9.0 / 5.0 + 32.0, 1)
+            code = int(cur.get("weather_code", 0))
+            return {
+                "location": place.get("name") or loc,
+                "temperature": temp,
+                "unit": unit,
+                "condition": _WMO_CODES.get(code, "Partly cloudy"),
+                "humidity_pct": cur.get("relative_humidity_2m"),
+                "mock": False,
+            }
+    except Exception:
+        return _mock_weather(loc, unit)
+
+
 def _execute_builtin(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "get_current_time":
         raw_tz = (args.get("timezone") or "IST").strip()
@@ -225,15 +300,7 @@ def _execute_builtin(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "get_weather":
         loc = args.get("location", "Unknown")
         unit = args.get("unit", "celsius")
-        temp = 26 if unit == "celsius" else 79
-        return {
-            "location": loc,
-            "temperature": temp,
-            "unit": unit,
-            "condition": "Partly cloudy",
-            "humidity_pct": 58,
-            "mock": True,
-        }
+        return _mock_weather(loc, unit)
     if name == "book_appointment":
         return {
             "status": "booked",
@@ -277,7 +344,13 @@ async def execute_tool(tool: Any, raw_arguments: Dict[str, Any]) -> Tuple[Dict[s
     exec_type = (tool.execution_type or "mock").lower()
 
     if exec_type == "built_in":
-        result = _execute_builtin(tool.name, args)
+        if tool.name == "get_weather":
+            result = await _fetch_live_weather(
+                args.get("location", "Unknown"),
+                args.get("unit", "celsius"),
+            )
+        else:
+            result = _execute_builtin(tool.name, args)
         return result, round((time.perf_counter() - start) * 1000.0, 2)
 
     if exec_type == "mock":
