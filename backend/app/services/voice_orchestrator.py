@@ -97,6 +97,8 @@ class VoiceOrchestrator:
         rag_api_key: Optional[str] = None,
         embedding_provider: Optional[BaseEmbeddingProvider] = None,
         is_public_session: bool = False,
+        stt_vocab_hint: Optional[str] = None,
+        has_knowledge_base: Optional[bool] = None,
     ):
         self.agent = agent
         self.session_id = session_id
@@ -111,6 +113,8 @@ class VoiceOrchestrator:
         self.rag_api_key = rag_api_key
         self.embedding_provider = embedding_provider
         self.is_public_session = is_public_session
+        self.stt_vocab_hint = stt_vocab_hint
+        self.has_knowledge_base = has_knowledge_base
 
         self._state: VoiceState = VoiceState.IDLE
         self._history: List[Dict[str, str]] = []
@@ -283,11 +287,19 @@ class VoiceOrchestrator:
                         return
 
             # 1. Speech-to-Text
-            stt_result = await self.stt.transcribe(
-                utterance_pcm16,
-                sample_rate=self.vad.sample_rate,
-                language=self.agent.stt_language,
-            )
+            try:
+                stt_result = await self.stt.transcribe(
+                    utterance_pcm16,
+                    sample_rate=self.vad.sample_rate,
+                    language=self.agent.stt_language,
+                    context_prompt=self.stt_vocab_hint,
+                )
+            except TypeError:
+                stt_result = await self.stt.transcribe(
+                    utterance_pcm16,
+                    sample_rate=self.vad.sample_rate,
+                    language=self.agent.stt_language,
+                )
             if self._cancel_event.is_set():
                 return
 

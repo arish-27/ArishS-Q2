@@ -12,6 +12,7 @@ from app.models.session import CallSession
 from app.models.user import User, UserApiKey
 from app.providers.llm import get_llm_provider
 from app.providers.stt import get_stt_provider
+from app.providers.stt.vocab import build_session_stt_vocab_hint
 from app.providers.tts import get_tts_provider
 from app.services.rate_limiter import rate_limiter
 from app.services.voice_orchestrator import VoiceOrchestrator
@@ -120,7 +121,10 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
                 except Exception:
                     pass
 
+        stt_vocab_hint = ""
+        has_knowledge_base = False
         if not key_error:
+            stt_vocab_hint, has_knowledge_base = await build_session_stt_vocab_hint(agent, db)
             call_session = CallSession(
                 agent_id=agent.id,
                 user_id=user.id,
@@ -186,6 +190,8 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
         send_bytes=safe_send_bytes,
         db_session_factory=AsyncSessionLocal,
         rag_api_key=rag_api_key,
+        stt_vocab_hint=stt_vocab_hint,
+        has_knowledge_base=has_knowledge_base,
     )
 
     await safe_send_json({
@@ -401,7 +407,10 @@ async def public_voice_stream_websocket(websocket: WebSocket, slug: str):
 
         rag_api_key = api_key if provider_name == "gemini" else settings.GEMINI_API_KEY
 
+        stt_vocab_hint = ""
+        has_knowledge_base = False
         if not key_error:
+            stt_vocab_hint, has_knowledge_base = await build_session_stt_vocab_hint(agent, db)
             call_session = CallSession(
                 agent_id=agent.id,
                 user_id=None,  # Anonymous public session
@@ -467,6 +476,8 @@ async def public_voice_stream_websocket(websocket: WebSocket, slug: str):
         db_session_factory=AsyncSessionLocal,
         rag_api_key=rag_api_key,
         is_public_session=True,
+        stt_vocab_hint=stt_vocab_hint,
+        has_knowledge_base=has_knowledge_base,
     )
 
     await safe_send_json({

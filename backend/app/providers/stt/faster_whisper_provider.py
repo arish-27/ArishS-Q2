@@ -176,17 +176,22 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
             self.compute_type,
             self.cpu_threads,
         )
-        segments_iter, info = model.transcribe(
-            audio_f32,
-            language="en" if lang_code.startswith("en") else lang_code,
-            beam_size=self.beam_size,
-            best_of=self.beam_size,
-            temperature=0.0,
-            vad_filter=False,  # Already segmented by streaming server-side VAD
-            condition_on_previous_text=False,
-            no_speech_threshold=0.6,
-            log_prob_threshold=-1.0,
-        )
+        transcribe_kwargs = {
+            "language": "en" if lang_code.startswith("en") else lang_code,
+            "beam_size": self.beam_size,
+            "best_of": self.beam_size,
+            "temperature": 0.0,
+            "vad_filter": False,  # Already segmented by streaming server-side VAD
+            "condition_on_previous_text": False,
+            "no_speech_threshold": 0.6,
+            "log_prob_threshold": -1.0,
+        }
+        if context_prompt and context_prompt.strip():
+            hint = context_prompt.strip()
+            transcribe_kwargs["initial_prompt"] = f"Vocabulary: {hint}"
+            transcribe_kwargs["hotwords"] = hint
+
+        segments_iter, info = model.transcribe(audio_f32, **transcribe_kwargs)
         segments = list(segments_iter)
 
         kept_texts = []
