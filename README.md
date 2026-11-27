@@ -163,7 +163,12 @@ AI-PROJECT/
 3. **Build & start all 4 services**
    ```bash
    docker compose up --build -d
-   docker compose exec backend alembic upgrade head
+   ```
+   *(The backend automatically waits for PostgreSQL, runs `alembic upgrade head` idempotently on startup, and starts FastAPI.)*
+
+4. **(Optional) Seed demo data**
+   ```bash
+   docker compose exec backend python scripts/seed_demo.py
    ```
 4. **Access the platform**
    - **Frontend:** http://localhost:3001

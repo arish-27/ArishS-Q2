@@ -30,5 +30,5 @@ COPY . .
 # Expose FastAPI port
 EXPOSE 8000
 
-# Default command to run FastAPI development server with hot-reload
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Default command: wait for Postgres, run alembic upgrade head, then start uvicorn
+CMD ["python", "entrypoint.py"]
