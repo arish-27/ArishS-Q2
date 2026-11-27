@@ -751,6 +751,7 @@ class VoiceOrchestrator:
             f"stt_avg_logprob={avg_lp} model_used={meta.get('model_used')} "
             f"retry_count={meta.get('retry_count')} error={message}"
         )
+        await self._record_session_error(code, message)
         await self.send_json({"type": "error", "code": code, "message": message})
         await self.send_json({
             "type": "transcript",
@@ -839,10 +840,24 @@ class VoiceOrchestrator:
             return result, dur_ms
         except (ToolValidationError, SSRFBlockedError) as exc:
             await filler_task
+            await self._record_session_error("TOOL_ERROR", str(exc))
             return {"error": str(exc)}, 0.0
         except Exception as exc:
             await filler_task
+            await self._record_session_error("TOOL_ERROR", f"Tool execution error: {exc}")
             return {"error": f"Tool execution error: {exc}"}, 0.0
+
+    async def _record_session_error(self, code: str, message: str) -> None:
+        """Increments turn-level error_count and records last_error on CallSession."""
+        try:
+            async with self.db_session_factory() as db:
+                sess = await db.get(CallSession, self.session_id)
+                if sess:
+                    sess.error_count = (sess.error_count or 0) + 1
+                    sess.last_error = f"{code}: {message}"[:500]
+                    await db.commit()
+        except Exception as db_exc:
+            logger.warning(f"Failed to record session error: {db_exc}")
 
     async def _persist_turn(
         self,

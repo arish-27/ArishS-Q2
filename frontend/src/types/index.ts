@@ -140,6 +140,7 @@ export interface AnalyticsOverview {
   total_sessions: number;
   total_minutes: number;
   error_count: number;
+  error_breakdown?: Record<string, number>;
   avg_stt_latency_ms: number;
   avg_llm_first_token_ms: number;
   avg_tts_first_audio_ms: number;
@@ -159,6 +160,8 @@ export interface AnalyticsSessionSummary {
   status: string;
   total_turns: number;
   avg_latency_ms: number;
+  error_count: number;
+  last_error?: string | null;
 }
 
 export interface AnalyticsMessageDetail {

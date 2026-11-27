@@ -32,6 +32,7 @@ export default function AnalyticsPage() {
   const [filterAgent, setFilterAgent] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [showEmpty, setShowEmpty] = useState(false);
 
   // Detail modal
   const [selectedDetail, setSelectedDetail] = useState<AnalyticsSessionDetail | null>(null);
@@ -46,6 +47,7 @@ export default function AnalyticsPage() {
           agent_id: filterAgent || undefined,
           date: filterDate || undefined,
           status: filterStatus || undefined,
+          include_empty: showEmpty,
         }),
         api.listAgents(),
       ]);
@@ -55,7 +57,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [filterAgent, filterDate, filterStatus]);
+  }, [filterAgent, filterDate, filterStatus, showEmpty]);
 
   useEffect(() => {
     void loadData();
@@ -129,6 +131,15 @@ export default function AnalyticsPage() {
             <AlertTriangle className="w-4 h-4 text-rose-400" />
           </div>
           <p className="text-3xl font-extrabold text-white">{overview ? overview.error_count : '...'}</p>
+          {overview?.error_breakdown && Object.keys(overview.error_breakdown).length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {Object.entries(overview.error_breakdown).map(([code, cnt]) => (
+                <span key={code} className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-300 text-[10px] font-mono">
+                  {code}: {cnt}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -219,6 +230,15 @@ export default function AnalyticsPage() {
               <option value="active">active</option>
               <option value="error">error</option>
             </select>
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer px-2">
+              <input
+                type="checkbox"
+                checked={showEmpty}
+                onChange={(e) => setShowEmpty(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-950 accent-sky-500"
+              />
+              Show empty sessions
+            </label>
           </div>
         </div>
 
@@ -262,14 +282,16 @@ export default function AnalyticsPage() {
                     <td className="px-4 py-3">
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                          s.status === 'error'
+                          s.status === 'error' || s.error_count > 0
                             ? 'bg-rose-500/10 text-rose-400'
                             : s.status === 'active'
                               ? 'bg-sky-500/10 text-sky-400'
                               : 'bg-emerald-500/10 text-emerald-400'
                         }`}
+                        title={s.last_error || undefined}
                       >
                         {s.status}
+                        {s.error_count > 0 ? ` (${s.error_count} err)` : ''}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right">

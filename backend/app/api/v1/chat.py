@@ -289,16 +289,40 @@ async def chat_with_agent(
 
         except LLMAuthenticationError as e:
             err_data = {"error": str(e), "code": "AUTH_ERROR"}
+            async with AsyncSession(db.bind) as err_db:
+                sess_rec = await err_db.get(CallSession, session_id)
+                if sess_rec:
+                    sess_rec.error_count = (sess_rec.error_count or 0) + 1
+                    sess_rec.last_error = f"AUTH_ERROR: {e}"[:500]
+                    await err_db.commit()
             yield f"event: error\ndata: {json.dumps(err_data)}\n\n"
         except LLMRateLimitError as e:
             err_data = {"error": str(e), "code": "RATE_LIMIT"}
+            async with AsyncSession(db.bind) as err_db:
+                sess_rec = await err_db.get(CallSession, session_id)
+                if sess_rec:
+                    sess_rec.error_count = (sess_rec.error_count or 0) + 1
+                    sess_rec.last_error = f"RATE_LIMIT: {e}"[:500]
+                    await err_db.commit()
             yield f"event: error\ndata: {json.dumps(err_data)}\n\n"
         except LLMTimeoutError as e:
             err_data = {"error": str(e), "code": "TIMEOUT"}
+            async with AsyncSession(db.bind) as err_db:
+                sess_rec = await err_db.get(CallSession, session_id)
+                if sess_rec:
+                    sess_rec.error_count = (sess_rec.error_count or 0) + 1
+                    sess_rec.last_error = f"TIMEOUT: {e}"[:500]
+                    await err_db.commit()
             yield f"event: error\ndata: {json.dumps(err_data)}\n\n"
         except Exception as e:
             logger.error(f"Streaming chat error: {e}")
             err_data = {"error": f"LLM error: {str(e)}", "code": "PROVIDER_ERROR"}
+            async with AsyncSession(db.bind) as err_db:
+                sess_rec = await err_db.get(CallSession, session_id)
+                if sess_rec:
+                    sess_rec.error_count = (sess_rec.error_count or 0) + 1
+                    sess_rec.last_error = f"PROVIDER_ERROR: {e}"[:500]
+                    await err_db.commit()
             yield f"event: error\ndata: {json.dumps(err_data)}\n\n"
 
     return StreamingResponse(

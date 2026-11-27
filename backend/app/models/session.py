@@ -20,6 +20,8 @@ class CallSession(Base):
     status = Column(String(50), default="active", nullable=False)  # 'active', 'completed', 'interrupted', 'error'
     total_turns = Column(Integer, default=0)
     avg_latency_ms = Column(Float, default=0.0)
+    error_count = Column(Integer, default=0, nullable=False)
+    last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utc_now)
 
     agent = relationship("Agent", back_populates="sessions")

@@ -32,7 +32,19 @@ async def get_analytics_overview(
     total_sessions = len(session_rows)
     total_seconds = sum((s.duration_seconds or 0) for s, _ in session_rows)
     total_minutes = round(total_seconds / 60.0, 2)
-    error_count = sum(1 for s, _ in session_rows if s.status == "error")
+    error_breakdown: Dict[str, int] = {}
+    error_count = 0
+    for s, _ in session_rows:
+        turn_errs = s.error_count or 0
+        if turn_errs > 0:
+            error_count += turn_errs
+            err_type = "PIPELINE_ERROR"
+            if s.last_error and ":" in s.last_error:
+                err_type = s.last_error.split(":", 1)[0].strip() or "PIPELINE_ERROR"
+            error_breakdown[err_type] = error_breakdown.get(err_type, 0) + turn_errs
+        elif s.status == "error":
+            error_count += 1
+            error_breakdown["SESSION_ERROR"] = error_breakdown.get("SESSION_ERROR", 0) + 1
 
     # Stage latency averages from assistant messages
     stt_vals: List[float] = []
@@ -73,8 +85,8 @@ async def get_analytics_overview(
             d_key = s.started_at.date().isoformat()
             if d_key in day_buckets:
                 day_buckets[d_key]["sessions"] += 1
-                if s.status == "error":
-                    day_buckets[d_key]["errors"] += 1
+                if (s.error_count or 0) > 0 or s.status == "error":
+                    day_buckets[d_key]["errors"] += max(1, s.error_count or 0)
 
         entry = agent_agg.setdefault(
             s.agent_id,
@@ -103,6 +115,7 @@ async def get_analytics_overview(
         "total_sessions": total_sessions,
         "total_minutes": total_minutes,
         "error_count": error_count,
+        "error_breakdown": error_breakdown,
         "avg_stt_latency_ms": _avg(stt_vals),
         "avg_llm_first_token_ms": _avg(llm_ttft_vals),
         "avg_tts_first_audio_ms": _avg(tts_ttfa_vals),
@@ -117,6 +130,7 @@ async def list_analytics_sessions(
     agent_id: Optional[str] = Query(default=None),
     date: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
     status_filter: Optional[str] = Query(default=None, alias="status"),
+    include_empty: bool = Query(default=False, description="Include 0-turn sessions"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -126,6 +140,8 @@ async def list_analytics_sessions(
         .join(Agent, Agent.id == CallSession.agent_id)
         .where(Agent.user_id == current_user.id)
     )
+    if not include_empty:
+        stmt = stmt.where(CallSession.total_turns > 0)
     if agent_id:
         stmt = stmt.where(CallSession.agent_id == agent_id)
     if status_filter:
@@ -148,6 +164,8 @@ async def list_analytics_sessions(
             "status": s.status,
             "total_turns": s.total_turns or 0,
             "avg_latency_ms": round(s.avg_latency_ms or 0.0, 1),
+            "error_count": s.error_count or 0,
+            "last_error": s.last_error,
         })
     return results
 
@@ -213,5 +231,7 @@ async def get_analytics_session_detail(
         "status": s.status,
         "total_turns": s.total_turns or 0,
         "avg_latency_ms": round(s.avg_latency_ms or 0.0, 1),
+        "error_count": s.error_count or 0,
+        "last_error": s.last_error,
         "messages": messages,
     }

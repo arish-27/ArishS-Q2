@@ -58,3 +58,36 @@ def test_analytics_overview_sessions_detail_and_isolation(server):
     assert ov_b["total_sessions"] == 0
     st_det_b, _ = http_request(f"{server}/api/v1/analytics/sessions/{sess_id}", token=token_b)
     assert st_det_b == 404
+
+    # Turn-level error tracking & 0-turn empty session filtering
+    from app.providers.llm.base import BaseLLMProvider, LLMTimeoutError
+
+    class FailingTimeoutLLM(BaseLLMProvider):
+        async def generate_stream(self, messages, system_prompt="", temperature=0.7, model=""):
+            raise LLMTimeoutError("Simulated LLM timeout")
+            yield ""
+
+    with patch("app.api.v1.chat.get_llm_provider", return_value=FailingTimeoutLLM("mock")):
+        req_err = urllib.request.Request(
+            f"{server}/api/v1/chat/{agent_id}",
+            data=json.dumps({"message": "Trigger timeout"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token_a}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_err) as resp:
+            _ = resp.read()
+
+    # Empty 0-turn session hidden by default, shown with include_empty=true
+    _, sess_default = http_request(f"{server}/api/v1/analytics/sessions?agent_id={agent_id}", token=token_a)
+    _, sess_with_empty = http_request(
+        f"{server}/api/v1/analytics/sessions?agent_id={agent_id}&include_empty=true", token=token_a
+    )
+    assert all(s["total_turns"] > 0 for s in sess_default)
+    assert len(sess_with_empty) > len(sess_default)
+    err_sess = next((s for s in sess_with_empty if (s.get("error_count") or 0) > 0), None)
+    assert err_sess is not None
+    assert "TIMEOUT" in (err_sess.get("last_error") or "")
+
+    _, ov_after = http_request(f"{server}/api/v1/analytics/overview", token=token_a)
+    assert ov_after["error_count"] >= 1
+    assert ov_after["error_breakdown"].get("TIMEOUT", 0) >= 1

@@ -330,11 +330,13 @@ class ApiClient {
     agent_id?: string;
     date?: string;
     status?: string;
+    include_empty?: boolean;
   }): Promise<AnalyticsSessionSummary[]> {
     const params = new URLSearchParams();
     if (filters?.agent_id) params.set('agent_id', filters.agent_id);
     if (filters?.date) params.set('date', filters.date);
     if (filters?.status) params.set('status', filters.status);
+    if (filters?.include_empty) params.set('include_empty', 'true');
     const qs = params.toString() ? `?${params.toString()}` : '';
     return this.request<AnalyticsSessionSummary[]>(`/analytics/sessions${qs}`);
   }
