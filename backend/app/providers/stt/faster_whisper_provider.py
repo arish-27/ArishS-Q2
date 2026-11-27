@@ -140,10 +140,22 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
             return settings.WHISPER_ENGLISH_MODEL_SIZE
         return self.model_size
 
-    def _transcribe_sync(self, audio_pcm16: bytes, sample_rate: int, language: str) -> STTResult:
+    def _transcribe_sync(
+        self,
+        audio_pcm16: bytes,
+        sample_rate: int,
+        language: str,
+        context_prompt: Optional[str] = None,
+    ) -> STTResult:
         start = time.perf_counter()
         if not audio_pcm16 or len(audio_pcm16) < 3200:  # < 100ms at 16kHz PCM16
-            return STTResult(text="", language=language, duration_ms=0.0, latency_ms=0.0)
+            return STTResult(
+                text="",
+                language=language,
+                duration_ms=0.0,
+                latency_ms=0.0,
+                provider="faster-whisper",
+            )
 
         samples_int16 = np.frombuffer(audio_pcm16, dtype=np.int16)
         duration_ms = (len(samples_int16) / float(sample_rate)) * 1000.0
@@ -229,6 +241,7 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
             latency_ms=round(latency_ms, 2),
             avg_logprob=avg_logprob,
             no_speech_prob=no_speech_prob,
+            provider="faster-whisper",
         )
 
     async def transcribe(
@@ -236,9 +249,16 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
         audio_pcm16: bytes,
         sample_rate: int = 16000,
         language: str = "en",
+        context_prompt: Optional[str] = None,
     ) -> STTResult:
         try:
-            return await asyncio.to_thread(self._transcribe_sync, audio_pcm16, sample_rate, language)
+            return await asyncio.to_thread(
+                self._transcribe_sync,
+                audio_pcm16,
+                sample_rate,
+                language,
+                context_prompt,
+            )
         except Exception as exc:
             logger.error(f"faster-whisper transcription failed: {exc}")
             raise STTProviderError(f"STT transcription failed: {exc}") from exc

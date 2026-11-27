@@ -16,6 +16,7 @@ class STTResult:
     latency_ms: float
     avg_logprob: Optional[float] = None
     no_speech_prob: Optional[float] = None
+    provider: str = "faster-whisper"
 
 
 class BaseSTTProvider(ABC):
@@ -27,6 +28,7 @@ class BaseSTTProvider(ABC):
         audio_pcm16: bytes,
         sample_rate: int = 16000,
         language: str = "en",
+        context_prompt: Optional[str] = None,
     ) -> STTResult:
         """Transcribes raw 16-bit signed mono PCM audio bytes into text."""
         raise NotImplementedError

@@ -18,6 +18,11 @@ SUPPORTED_OPENAI_MODELS = [
     "gpt-6.2-astra",
 ]
 
+SUPPORTED_STT_PROVIDERS = [
+    "gemini",
+    "faster-whisper",
+]
+
 RETIRED_OR_DEPRECATED_MODELS = {
     "gemini-1.5-flash",
     "gemini-1.5-pro",
@@ -54,7 +59,7 @@ class AgentBase(BaseModel):
     llm_model: str = Field(default="gemini-3.5-flash-lite")
     temperature: float = Field(default=0.7, ge=0.0, le=1.0)
 
-    stt_provider: str = Field(default="faster-whisper")
+    stt_provider: str = Field(default="gemini")
     stt_language: str = Field(default="en")
     tts_provider: str = Field(default="edge-tts")
     tts_voice: str = Field(default="en-US-GuyNeural")
@@ -91,6 +96,17 @@ class AgentCreate(AgentBase):
             raise ValueError(f"Unsupported model '{model}' for provider '{prov}'. Allowed: {allowed}")
         return model
 
+    @field_validator("stt_provider")
+    def validate_stt_provider(cls, v):
+        prov = (v or "gemini").lower().strip()
+        if prov in ("whisper", "local"):
+            return "faster-whisper"
+        if prov not in SUPPORTED_STT_PROVIDERS:
+            raise ValueError(
+                f"Unsupported stt_provider '{v}'. Allowed: {SUPPORTED_STT_PROVIDERS}"
+            )
+        return prov
+
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
@@ -122,6 +138,19 @@ class AgentUpdate(BaseModel):
                 f"Unsupported model '{model}'. Allowed: {SUPPORTED_GEMINI_MODELS + SUPPORTED_OPENAI_MODELS}"
             )
         return model
+
+    @field_validator("stt_provider")
+    def validate_stt_provider(cls, v):
+        if v is None:
+            return v
+        prov = v.lower().strip()
+        if prov in ("whisper", "local"):
+            return "faster-whisper"
+        if prov not in SUPPORTED_STT_PROVIDERS:
+            raise ValueError(
+                f"Unsupported stt_provider '{v}'. Allowed: {SUPPORTED_STT_PROVIDERS}"
+            )
+        return prov
 
 class AgentPublish(BaseModel):
     is_published: bool

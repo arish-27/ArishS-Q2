@@ -56,7 +56,9 @@ class Settings(BaseSettings):
     LLM_FIRST_TOKEN_TIMEOUT_S: float = 8.0
 
     # Speech, STT & TTS Defaults
-    DEFAULT_STT_PROVIDER: str = "faster-whisper"
+    DEFAULT_STT_PROVIDER: str = "gemini"
+    GEMINI_STT_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_STT_TIMEOUT_S: float = 4.0
     WHISPER_MODEL_SIZE: str = "small"
     WHISPER_ENGLISH_MODEL_SIZE: str = "small.en"
     WHISPER_BEAM_SIZE: int = 1

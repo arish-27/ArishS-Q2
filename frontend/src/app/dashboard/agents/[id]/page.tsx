@@ -57,7 +57,7 @@ export default function EditAgentPage() {
   const [llmProvider, setLlmProvider] = useState('gemini');
   const [llmModel, setLlmModel] = useState('gemini-3.5-flash-lite');
   const [temperature, setTemperature] = useState(0.7);
-  const [sttProvider, setSttProvider] = useState('faster-whisper');
+  const [sttProvider, setSttProvider] = useState('gemini');
   const [sttLanguage, setSttLanguage] = useState('en');
   const [ttsProvider, setTtsProvider] = useState('edge-tts');
   const [ttsVoice, setTtsVoice] = useState('en-US-GuyNeural');
@@ -521,7 +521,21 @@ export default function EditAgentPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                    STT Provider
+                  </label>
+                  <select
+                    value={sttProvider}
+                    onChange={(e) => setSttProvider(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-white focus:outline-none focus:border-emerald-500 text-sm transition"
+                  >
+                    <option value="gemini">Gemini (cloud)</option>
+                    <option value="faster-whisper">faster-whisper (Local CTranslate2)</option>
+                  </select>
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
                     TTS Voice

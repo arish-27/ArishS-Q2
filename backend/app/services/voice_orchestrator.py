@@ -679,6 +679,7 @@ class VoiceOrchestrator:
             # Log per-turn diagnostics
             logger.info(
                 f"VoiceTurn session={self.session_id} transcript={user_text!r} "
+                f"stt_provider={getattr(stt_result, 'provider', 'unknown')} "
                 f"stt_avg_logprob={stt_result.avg_logprob} model_used={turn_meta['model_used']} "
                 f"retry_count={turn_meta['retry_count']}"
             )

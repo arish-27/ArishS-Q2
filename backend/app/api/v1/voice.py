@@ -158,7 +158,7 @@ async def voice_stream_websocket(websocket: WebSocket, agent_id: str):
             llm.thinking_level = "minimal"
         if hasattr(llm, "max_output_tokens"):
             llm.max_output_tokens = 150
-        stt = get_stt_provider(agent.stt_provider)
+        stt = get_stt_provider(agent.stt_provider, api_key=rag_api_key)
         tts = get_tts_provider(agent.tts_provider)
         vad = StreamingVAD(
             sample_rate=16000,
@@ -439,7 +439,7 @@ async def public_voice_stream_websocket(websocket: WebSocket, slug: str):
             llm.thinking_level = "minimal"
         if hasattr(llm, "max_output_tokens"):
             llm.max_output_tokens = 150
-        stt = get_stt_provider(agent.stt_provider)
+        stt = get_stt_provider(agent.stt_provider, api_key=rag_api_key)
         tts = get_tts_provider(agent.tts_provider)
         vad = StreamingVAD(
             sample_rate=16000,
