@@ -309,17 +309,40 @@ class VoiceOrchestrator:
 
             user_text = stt_result.text.strip()
             alnum_count = len(re.sub(r"[^A-Za-z0-9]", "", user_text))
-            if (
-                not user_text
-                or alnum_count < 2
-                or (stt_result.avg_logprob is not None and stt_result.avg_logprob <= -1.0)
-            ):
-                # Transition: THINKING -> LISTENING when audio had no recognizable speech
+            low_logprob = stt_result.avg_logprob is not None and stt_result.avg_logprob <= -1.5
+            high_no_speech = stt_result.no_speech_prob is not None and stt_result.no_speech_prob >= 0.8
+            if not user_text or alnum_count < 2 or low_logprob or high_no_speech:
+                if high_no_speech:
+                    drop_reason = "no_speech_prob"
+                elif low_logprob:
+                    drop_reason = "avg_logprob"
+                elif audio_duration_ms < 200 or (user_text and alnum_count < 2):
+                    drop_reason = "too_short"
+                else:
+                    drop_reason = "low_vad"
+
                 logger.info(
-                    f"VoiceTurn dropped session={self.session_id} transcript={user_text!r} "
-                    f"stt_avg_logprob={stt_result.avg_logprob} reason=empty_or_low_confidence"
+                    f"VoiceTurn dropped session={self.session_id} reason={drop_reason} "
+                    f"transcript={user_text!r} stt_provider={getattr(stt_result, 'provider', 'unknown')} "
+                    f"stt_avg_logprob={stt_result.avg_logprob} stt_no_speech_prob={stt_result.no_speech_prob} "
+                    f"audio_duration_ms={round(audio_duration_ms, 1)}"
                 )
-                await self.transition(VoiceState.LISTENING, reason="empty_transcript")
+                await self.send_json({
+                    "type": "utterance_dropped",
+                    "reason": drop_reason,
+                    "audio_duration_ms": round(audio_duration_ms, 1),
+                    "message": "Sorry, I didn't catch that.",
+                })
+                await self.send_json({
+                    "type": "transcript",
+                    "role": "assistant",
+                    "text": "Sorry, I didn't catch that.",
+                    "dropped": True,
+                    "reason": drop_reason,
+                })
+                await self._speak_fallback_line("Sorry, I didn't catch that.")
+                if self._state != VoiceState.IDLE:
+                    await self.transition(VoiceState.LISTENING, reason="utterance_dropped")
                 return
 
             await self.send_json({

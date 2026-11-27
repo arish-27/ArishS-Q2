@@ -486,7 +486,10 @@ async def test_orchestrator_drops_low_confidence_or_short_stt():
     await orch.transition(VoiceState.THINKING, reason="test")
     await orch._execute_turn(b"\x01\x00" * 3200, 200.0)
     assert orch.state == VoiceState.LISTENING
-    assert not any(ev.get("type") == "transcript" for ev in events)
+    assert not any(ev.get("type") == "transcript" and ev.get("role") == "user" for ev in events)
+    assert any(ev.get("type") == "utterance_dropped" for ev in events)
+    assert any(ev.get("type") == "transcript" and ev.get("dropped") is True for ev in events)
+    assert any(ev.get("type") == "audio_start" and "didn't catch that" in ev.get("text", "") for ev in events)
 
 
 @pytest.mark.anyio

@@ -69,9 +69,9 @@ interface DebugEvent {
 }
 
 const NOISE_PRESETS = {
-  low: { speech_start_threshold: 0.72, speech_end_threshold: 0.55, energy_multiplier: 2.5 },
-  medium: { speech_start_threshold: 0.6, speech_end_threshold: 0.45, energy_multiplier: 2.0 },
-  high: { speech_start_threshold: 0.45, speech_end_threshold: 0.32, energy_multiplier: 1.5 },
+  low: { speech_start_threshold: 0.4, speech_end_threshold: 0.25, energy_multiplier: 1.5, min_speech_ms: 120 },
+  medium: { speech_start_threshold: 0.5, speech_end_threshold: 0.35, energy_multiplier: 2.0, min_speech_ms: 150 },
+  high: { speech_start_threshold: 0.7, speech_end_threshold: 0.5, energy_multiplier: 2.5, min_speech_ms: 200 },
 } as const;
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/api/v1/voice/stream';
@@ -445,6 +445,10 @@ export default function VoicePlaygroundPage() {
               break;
             }
 
+            case 'utterance_dropped':
+              pushDebug('utterance_dropped', `Dropped (${msg.reason || 'noise'}) ${msg.audio_duration_ms || 0}ms`);
+              break;
+
             case 'error':
               setWsError({ code: msg.code, message: msg.message });
               if (activeStreamMsgIdRef.current) {
@@ -725,7 +729,7 @@ export default function VoicePlaygroundPage() {
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Noise Sensitivity</span>
+                  <span className="text-slate-400">Noise Filtering <span className="text-[10px] text-slate-500">(High = reject more noise)</span></span>
                   <span className="font-mono text-[11px] text-slate-500 capitalize">{noiseSensitivity}</span>
                 </div>
                 <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">

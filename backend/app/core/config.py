@@ -72,11 +72,11 @@ class Settings(BaseSettings):
 
     # Server-Side VAD Settings (with hysteresis, energy gate, and hard cap)
     VAD_SILENCE_THRESHOLD_MS: int = 700
-    VAD_SPEECH_START_THRESHOLD: float = 0.6
-    VAD_SPEECH_END_THRESHOLD: float = 0.45
-    VAD_SPEECH_THRESHOLD: float = 0.6
+    VAD_SPEECH_START_THRESHOLD: float = 0.5
+    VAD_SPEECH_END_THRESHOLD: float = 0.35
+    VAD_SPEECH_THRESHOLD: float = 0.5
     VAD_ENERGY_MULTIPLIER: float = 2.0
-    VAD_MIN_SPEECH_MS: int = 200
+    VAD_MIN_SPEECH_MS: int = 150
     VAD_MAX_UTTERANCE_S: int = 12
     VAD_BARGE_IN_DEBOUNCE_MS: int = 250
 

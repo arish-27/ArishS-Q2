@@ -104,7 +104,7 @@ def _is_hallucinated_or_empty(text: str, avg_logprob: Optional[float], duration_
     alnum = re.sub(r"[^A-Za-z0-9]", "", cleaned)
     if len(alnum) < 2:
         return True
-    if avg_logprob is not None and avg_logprob <= -1.0:
+    if avg_logprob is not None and avg_logprob <= -1.5:
         return True
     if cleaned.lower() in _HALLUCINATION_PHRASES and duration_ms < 1500.0:
         return True
@@ -183,8 +183,8 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
             "temperature": 0.0,
             "vad_filter": False,  # Already segmented by streaming server-side VAD
             "condition_on_previous_text": False,
-            "no_speech_threshold": 0.6,
-            "log_prob_threshold": -1.0,
+            "no_speech_threshold": 0.8,
+            "log_prob_threshold": -1.5,
         }
         if context_prompt and context_prompt.strip():
             hint = context_prompt.strip()
@@ -211,9 +211,11 @@ class FasterWhisperSTTProvider(BaseSTTProvider):
 
             if not seg_text:
                 continue
-            if seg_nsp is not None and seg_nsp >= 0.6:
+            if seg_nsp is not None and seg_nsp >= 0.8:
+                logger.info(f"FasterWhisper segment dropped reason=no_speech_prob no_speech_prob={seg_nsp:.3f}")
                 continue
-            if seg_lp is not None and seg_lp <= -1.0:
+            if seg_lp is not None and seg_lp <= -1.5:
+                logger.info(f"FasterWhisper segment dropped reason=avg_logprob avg_logprob={seg_lp:.3f}")
                 continue
 
             kept_texts.append(seg_text)

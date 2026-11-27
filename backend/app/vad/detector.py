@@ -56,7 +56,7 @@ class StreamingVAD:
         self.max_utterance_bytes = int(self.max_utterance_seconds * sample_rate * 2)
 
         self._pcm_buffer = bytearray()
-        self._pre_speech_ring: Deque[bytes] = deque(maxlen=10)  # ~320ms pre-roll
+        self._pre_speech_ring: Deque[bytes] = deque(maxlen=13)  # ~416ms pre-roll (13 x 32ms frames)
         self._pending_frames: List[bytes] = []
         self._pending_probs: List[float] = []
         self._pending_ms: float = 0.0
@@ -224,6 +224,13 @@ class StreamingVAD:
                     if self._pending_frames:
                         self._pending_miss_count += 1
                         if self._pending_miss_count >= 2 or (prob < self.speech_end_threshold and not energy_ok and self._pending_miss_count >= 2):
+                            drop_reason = "energy_gate" if not energy_ok else ("low_vad" if prob < self.speech_start_threshold else "too_short")
+                            if self._pending_ms >= self.frame_ms * 2:
+                                logger.info(
+                                    f"VAD utterance dropped reason={drop_reason} "
+                                    f"pending_ms={self._pending_ms:.1f} prob={prob:.3f} "
+                                    f"rms={rms:.5f} noise_floor={self._noise_floor_rms:.5f}"
+                                )
                             for pend in self._pending_frames:
                                 self._pre_speech_ring.append(pend)
                             self._pending_frames.clear()
@@ -309,6 +316,11 @@ class StreamingVAD:
                 f"VAD utterance complete duration_ms={total_dur_ms:.1f} "
                 f"avg_prob={avg_prob:.3f} noise_floor={self._noise_floor_rms:.5f} "
                 f"end_reason=manual"
+            )
+        else:
+            logger.info(
+                f"VAD utterance dropped reason=too_short duration_ms={total_dur_ms:.1f} "
+                f"speech_ms={self._speech_ms:.1f} min_speech_ms={self.min_speech_ms}"
             )
         self.reset()
         return utterance if valid_speech else None
