@@ -69,7 +69,11 @@ SendBytesFn = Callable[[bytes], Awaitable[None]]
 
 VOICE_SYSTEM_PROMPT_ADDENDUM = (
     "\n\n[Voice Mode]: Reply in 1-2 short, natural spoken sentences. "
-    "Avoid markdown, bullet points, or emojis."
+    "Avoid markdown, bullet points, or emojis. "
+    "The user's speech is transcribed by an imperfect STT; when a word does not fit the context, "
+    "silently infer the intended word from the conversation and any retrieved documents "
+    "(for example, 'recipe' while discussing a CV or document means 'resume'), "
+    "and do not mention the transcription error unless it is truly ambiguous."
 )
 FALLBACK_ERROR_SPEECH = "Sorry, I had trouble. Could you repeat that?"
 TRANSIENT_LLM_ERRORS = (LLMServiceUnavailableError, LLMRateLimitError, LLMTimeoutError)
