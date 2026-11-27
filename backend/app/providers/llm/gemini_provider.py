@@ -198,12 +198,15 @@ class GeminiProvider(BaseLLMProvider):
                 if msg.get("content"):
                     parts.append({"text": str(msg["content"])})
                 for tc in msg["tool_calls"]:
-                    parts.append({
+                    part_obj: Dict[str, Any] = {
                         "functionCall": {
                             "name": tc["name"],
                             "args": tc.get("arguments", {}),
                         }
-                    })
+                    }
+                    if tc.get("thought_signature"):
+                        part_obj["thoughtSignature"] = tc["thought_signature"]
+                    parts.append(part_obj)
                 contents.append({"role": "model", "parts": parts})
             else:
                 gem_role = "model" if role == "assistant" else "user"
@@ -268,6 +271,7 @@ class GeminiProvider(BaseLLMProvider):
                         id=f"call_{idx}_{fc.get('name', 'tool')}",
                         name=fc.get("name", ""),
                         arguments=fc.get("args", {}) or {},
+                        thought_signature=part.get("thoughtSignature"),
                     )
                 )
         return ToolTurnResult(text="".join(texts).strip(), tool_calls=calls)

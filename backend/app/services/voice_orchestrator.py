@@ -452,7 +452,12 @@ class VoiceOrchestrator:
                         "role": "assistant",
                         "content": tool_turn.text or "",
                         "tool_calls": [
-                            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                            {
+                                "id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                                "thought_signature": getattr(tc, "thought_signature", None),
+                            }
                             for tc in tool_turn.tool_calls
                         ],
                     })

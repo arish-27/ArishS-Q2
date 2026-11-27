@@ -191,7 +191,12 @@ async def chat_with_agent(
                         "role": "assistant",
                         "content": turn_res.text or "",
                         "tool_calls": [
-                            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                            {
+                                "id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                                "thought_signature": getattr(tc, "thought_signature", None),
+                            }
                             for tc in turn_res.tool_calls
                         ],
                     })

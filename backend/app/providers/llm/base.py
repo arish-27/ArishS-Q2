@@ -8,6 +8,7 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: Dict[str, Any] = field(default_factory=dict)
+    thought_signature: Optional[str] = None
 
 
 @dataclass
