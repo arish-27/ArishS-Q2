@@ -14,6 +14,8 @@ class VADResult:
     is_speech: bool = False
     prob: float = 0.0
     avg_prob: float = 0.0
+    peak_prob: float = 0.0
+    speech_ratio: float = 0.0
     noise_floor_rms: float = 0.0
     end_reason: str = ""
 
@@ -64,6 +66,7 @@ class StreamingVAD:
 
         self._speech_buffer = bytearray()
         self._utterance_probs: List[float] = []
+        self._utterance_speech_frames: int = 0
         self._in_speech = False
         self._speech_ms = 0.0
         self._silence_ms = 0.0
@@ -134,6 +137,7 @@ class StreamingVAD:
         self._pending_miss_count = 0
         self._speech_buffer.clear()
         self._utterance_probs.clear()
+        self._utterance_speech_frames = 0
         self._in_speech = False
         self._speech_ms = 0.0
         self._silence_ms = 0.0
@@ -208,6 +212,7 @@ class StreamingVAD:
                         for pend in self._pending_frames:
                             self._speech_buffer.extend(pend)
                         self._utterance_probs = list(self._pending_probs)
+                        self._utterance_speech_frames = len(self._pending_probs)
                         self._pending_frames.clear()
                         self._pending_probs.clear()
                         self._pending_ms = 0.0
@@ -257,6 +262,7 @@ class StreamingVAD:
                 if energy_ok and prob >= self.speech_start_threshold:
                     self._speech_ms += self.frame_ms
                     self._silence_ms = 0.0
+                    self._utterance_speech_frames += 1
                 else:
                     self._silence_ms += self.frame_ms
 
@@ -265,21 +271,30 @@ class StreamingVAD:
 
                 if hit_silence or hit_cap:
                     utterance = bytes(self._speech_buffer)
+                    total_frames = len(self._utterance_probs)
                     avg_prob = (
-                        sum(self._utterance_probs) / len(self._utterance_probs)
-                        if self._utterance_probs
+                        sum(self._utterance_probs) / total_frames
+                        if total_frames
+                        else 0.0
+                    )
+                    peak_prob = max(self._utterance_probs) if total_frames else 0.0
+                    speech_ratio = (
+                        self._utterance_speech_frames / total_frames
+                        if total_frames
                         else 0.0
                     )
                     end_reason = "max_cap" if hit_cap and not hit_silence else "silence"
                     self._in_speech = False
                     self._speech_buffer.clear()
                     self._utterance_probs.clear()
+                    self._utterance_speech_frames = 0
                     self._silence_ms = 0.0
                     self._speech_ms = 0.0
 
                     total_dur_ms = (len(utterance) / 2.0 / self.sample_rate) * 1000.0
                     logger.info(
                         f"VAD utterance complete duration_ms={total_dur_ms:.1f} "
+                        f"speech_ratio={speech_ratio:.3f} peak_prob={peak_prob:.3f} "
                         f"avg_prob={avg_prob:.3f} noise_floor={self._noise_floor_rms:.5f} "
                         f"end_reason={end_reason}"
                     )
@@ -291,6 +306,8 @@ class StreamingVAD:
                             is_speech=False,
                             prob=prob,
                             avg_prob=round(avg_prob, 4),
+                            peak_prob=round(peak_prob, 4),
+                            speech_ratio=round(speech_ratio, 4),
                             noise_floor_rms=round(self._noise_floor_rms, 5),
                             end_reason=end_reason,
                         )

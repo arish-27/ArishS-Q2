@@ -10,7 +10,7 @@ from app.providers.stt.gemini_provider import GeminiSTTProvider, pcm16_to_wav_by
 from app.providers.stt.vocab import build_vocab_hint_from_parts, extract_distinctive_terms
 from app.providers.tts.base import BaseTTSProvider
 from app.services.voice_orchestrator import VoiceOrchestrator, VoiceState
-from app.vad.detector import StreamingVAD
+from app.vad.detector import StreamingVAD, VADResult
 
 
 class _FakeFallbackSTT(BaseSTTProvider):
@@ -92,7 +92,7 @@ async def test_gemini_stt_429_and_timeout_fallback(monkeypatch):
     assert res_429.provider == "faster-whisper"
     assert fb.calls == 1
 
-    # 2. Timeout -> retry once -> fallback
+    # 2. Timeout -> fall back immediately (no retry on timeout)
     class _ClientTimeout:
         def __init__(self):
             self.posts = 0
@@ -104,7 +104,7 @@ async def test_gemini_stt_429_and_timeout_fallback(monkeypatch):
     client_to = _ClientTimeout()
     monkeypatch.setattr("app.providers.stt.gemini_provider.get_gemini_stt_http_client", lambda t: client_to)
     res_to = await stt.transcribe(b"\x01\x00" * 3200)
-    assert client_to.posts == 2
+    assert client_to.posts == 1
     assert res_to.provider == "faster-whisper"
     assert fb.calls == 2
 
@@ -205,3 +205,137 @@ async def test_dropped_utterance_emits_event_transcript_note_and_tts():
     assert len(note_evs) == 1
     assert "didn't catch that" in note_evs[0]["text"]
     assert len(audio_bytes) > 0
+
+
+@pytest.mark.anyio
+async def test_4600ms_valid_transcript_is_not_dropped():
+    class _GoodSTT(BaseSTTProvider):
+        async def transcribe(self, audio_pcm16: bytes, sample_rate: int = 16000, language: str = "en", context_prompt=None) -> STTResult:
+            return STTResult(
+                text="Can you please motivate me?",
+                language="en",
+                duration_ms=4640.0,
+                latency_ms=120.0,
+                avg_logprob=-0.28,
+                no_speech_prob=0.85,  # high no_speech_prob must not drop >=2 valid words
+                provider="faster-whisper",
+            )
+
+    class _ReplyLLM(BaseLLMProvider):
+        async def generate_stream(self, messages, system_prompt="", temperature=0.7, model=""):
+            yield "You have got this! Keep pushing forward."
+
+    events = []
+
+    async def send_json(data):
+        events.append(data)
+
+    async def send_bytes(data):
+        pass
+
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        name="Motivator",
+        slug="motivator",
+        system_prompt="Be encouraging.",
+        llm_provider="gemini",
+        llm_model="gemini-3.5-flash-lite",
+        temperature=0.5,
+        stt_provider="faster-whisper",
+        stt_language="en",
+        tts_provider="edge-tts",
+        tts_voice="en-US-GuyNeural",
+    )
+    orch = VoiceOrchestrator(
+        agent=agent,
+        session_id=str(uuid.uuid4()),
+        llm_provider=_ReplyLLM(api_key="mock"),
+        stt_provider=_GoodSTT(),
+        tts_provider=_DummyTTS(),
+        vad=StreamingVAD(backend="webrtcvad"),
+        send_json=send_json,
+        send_bytes=send_bytes,
+    )
+    # Persist skipped via monkeypatch or fake session
+    async def _noop_persist(**kwargs):
+        return None
+    orch._persist_turn = _noop_persist
+
+    await orch.start_listening()
+    await orch.transition(VoiceState.THINKING, reason="test_keep_4640")
+    vad_res = VADResult(
+        utterance_pcm16=b"\x01\x00" * 74240,
+        duration_ms=4640.0,
+        avg_prob=0.18,
+        peak_prob=0.88,
+        speech_ratio=0.15,
+        end_reason="silence",
+    )
+    await orch._execute_turn(b"\x01\x00" * 74240, 4640.0, vad_result=vad_res)
+
+    assert not any(ev.get("type") == "utterance_dropped" for ev in events)
+    assert any(
+        ev.get("type") == "transcript" and ev.get("role") == "user" and ev.get("text") == "Can you please motivate me?"
+        for ev in events
+    )
+    assert any(
+        ev.get("type") == "transcript" and ev.get("role") == "assistant" and "Keep pushing forward" in ev.get("text", "")
+        for ev in events
+    )
+
+
+@pytest.mark.anyio
+async def test_200ms_no_speech_utterance_is_dropped_before_stt():
+    class _FailIfCalledSTT(BaseSTTProvider):
+        async def transcribe(self, audio_pcm16: bytes, sample_rate: int = 16000, language: str = "en", context_prompt=None) -> STTResult:
+            raise AssertionError("STT should not be called when pre-STT VAD gate drops low_vad")
+
+    events = []
+
+    async def send_json(data):
+        events.append(data)
+
+    async def send_bytes(data):
+        pass
+
+    agent = Agent(
+        id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        name="DropPreSTT",
+        slug="drop-prestt",
+        system_prompt="Be concise.",
+        llm_provider="gemini",
+        llm_model="gemini-3.5-flash-lite",
+        temperature=0.5,
+        stt_provider="faster-whisper",
+        stt_language="en",
+        tts_provider="edge-tts",
+        tts_voice="en-US-GuyNeural",
+    )
+    orch = VoiceOrchestrator(
+        agent=agent,
+        session_id=str(uuid.uuid4()),
+        llm_provider=_DummyLLM(api_key="mock"),
+        stt_provider=_FailIfCalledSTT(),
+        tts_provider=_DummyTTS(),
+        vad=StreamingVAD(backend="webrtcvad"),
+        send_json=send_json,
+        send_bytes=send_bytes,
+    )
+    await orch.start_listening()
+    await orch.transition(VoiceState.THINKING, reason="test_200ms_drop")
+    vad_res = VADResult(
+        utterance_pcm16=b"\x01\x00" * 3200,
+        duration_ms=200.0,
+        avg_prob=0.12,
+        peak_prob=0.22,
+        speech_ratio=0.0,
+        end_reason="silence",
+    )
+    await orch._execute_turn(b"\x01\x00" * 3200, 200.0, vad_result=vad_res)
+
+    assert orch.state == VoiceState.LISTENING
+    dropped = [ev for ev in events if ev.get("type") == "utterance_dropped"]
+    assert len(dropped) == 1
+    assert dropped[0]["reason"] == "low_vad"

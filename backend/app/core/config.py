@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     LLM_FIRST_TOKEN_TIMEOUT_S: float = 8.0
 
     # Speech, STT & TTS Defaults
-    DEFAULT_STT_PROVIDER: str = "gemini"
+    DEFAULT_STT_PROVIDER: str = "faster-whisper"
     GEMINI_STT_MODEL: str = "gemini-3.5-flash-lite"
     GEMINI_STT_TIMEOUT_S: float = 6.0
     STT_EXTRA_VOCAB: str = "resume, CGPA, ECE, IoT, embedded systems"

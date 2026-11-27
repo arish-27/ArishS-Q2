@@ -24,7 +24,7 @@ export default function CreateAgentPage() {
   const [llmModel, setLlmModel] = useState('gemini-3.5-flash-lite');
   const [temperature, setTemperature] = useState(0.7);
 
-  const [sttProvider, setSttProvider] = useState('gemini');
+  const [sttProvider, setSttProvider] = useState('faster-whisper');
   const [sttLanguage, setSttLanguage] = useState('en');
 
   const [ttsProvider, setTtsProvider] = useState('edge-tts');

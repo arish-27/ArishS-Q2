@@ -32,7 +32,7 @@ class Agent(Base):
     temperature = Column(Float, default=0.7, nullable=False)
 
     # STT & TTS Configuration
-    stt_provider = Column(String(50), default="gemini", nullable=False)
+    stt_provider = Column(String(50), default="faster-whisper", nullable=False)
     stt_language = Column(String(10), default="en", nullable=False)
     tts_provider = Column(String(50), default="edge-tts", nullable=False)
     tts_voice = Column(String(100), default="en-US-GuyNeural", nullable=False)

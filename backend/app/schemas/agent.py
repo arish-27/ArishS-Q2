@@ -59,7 +59,7 @@ class AgentBase(BaseModel):
     llm_model: str = Field(default="gemini-3.5-flash-lite")
     temperature: float = Field(default=0.7, ge=0.0, le=1.0)
 
-    stt_provider: str = Field(default="gemini")
+    stt_provider: str = Field(default="faster-whisper")
     stt_language: str = Field(default="en")
     tts_provider: str = Field(default="edge-tts")
     tts_voice: str = Field(default="en-US-GuyNeural")

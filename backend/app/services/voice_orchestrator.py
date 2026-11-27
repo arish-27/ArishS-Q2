@@ -28,7 +28,7 @@ from app.services.context_manager import ConversationContextManager
 from app.services.rag_service import retrieve_relevant_chunks
 from app.services.sentence_splitter import StreamingSentenceSplitter
 from app.services.tool_executor import SSRFBlockedError, ToolValidationError, execute_tool
-from app.vad.detector import StreamingVAD
+from app.vad.detector import StreamingVAD, VADResult
 
 
 class VoiceState(str, Enum):
@@ -230,7 +230,7 @@ class VoiceOrchestrator:
             if ev.speech_start:
                 await self.send_json({"type": "vad_speech_start"})
             if ev.utterance_pcm16 is not None:
-                await self._begin_turn(ev.utterance_pcm16, ev.duration_ms)
+                await self._begin_turn(ev.utterance_pcm16, ev.duration_ms, vad_result=ev)
                 break  # Turn transitions state to THINKING
 
     async def force_end_utterance(self) -> None:
@@ -242,16 +242,62 @@ class VoiceOrchestrator:
             duration_ms = (len(utterance) / 2.0 / self.vad.sample_rate) * 1000.0
             await self._begin_turn(utterance, duration_ms)
 
-    async def _begin_turn(self, utterance_pcm16: bytes, duration_ms: float) -> None:
+    async def _begin_turn(
+        self,
+        utterance_pcm16: bytes,
+        duration_ms: float,
+        vad_result: Optional[VADResult] = None,
+    ) -> None:
         """Transition: LISTENING -> THINKING once VAD detects end of utterance."""
         await self.send_json({"type": "vad_speech_end", "duration_ms": round(duration_ms, 1)})
         await self.transition(VoiceState.THINKING, reason="vad_utterance_complete")
         self._cancel_event.clear()
         self._turn_task = asyncio.create_task(
-            self._execute_turn(utterance_pcm16, duration_ms)
+            self._execute_turn(utterance_pcm16, duration_ms, vad_result=vad_result)
         )
 
-    async def _execute_turn(self, utterance_pcm16: bytes, audio_duration_ms: float) -> None:
+    async def _drop_utterance(
+        self,
+        drop_reason: str,
+        audio_duration_ms: float,
+        vad_result: Optional[VADResult],
+        user_text: str = "",
+        stt_result: Any = None,
+    ) -> None:
+        speech_ratio = getattr(vad_result, "speech_ratio", None)
+        peak_prob = getattr(vad_result, "peak_prob", None)
+        avg_prob = getattr(vad_result, "avg_prob", None)
+        logger.info(
+            f"VoiceTurn decision=drop session={self.session_id} reason={drop_reason} "
+            f"duration_ms={round(audio_duration_ms, 1)} speech_ratio={speech_ratio} "
+            f"peak_prob={peak_prob} avg_prob={avg_prob} "
+            f"transcript={user_text!r} stt_provider={getattr(stt_result, 'provider', 'none')} "
+            f"stt_avg_logprob={getattr(stt_result, 'avg_logprob', None)} "
+            f"stt_no_speech_prob={getattr(stt_result, 'no_speech_prob', None)}"
+        )
+        await self.send_json({
+            "type": "utterance_dropped",
+            "reason": drop_reason,
+            "audio_duration_ms": round(audio_duration_ms, 1),
+            "message": "Sorry, I didn't catch that.",
+        })
+        await self.send_json({
+            "type": "transcript",
+            "role": "assistant",
+            "text": "Sorry, I didn't catch that.",
+            "dropped": True,
+            "reason": drop_reason,
+        })
+        await self._speak_fallback_line("Sorry, I didn't catch that.")
+        if self._state != VoiceState.IDLE:
+            await self.transition(VoiceState.LISTENING, reason="utterance_dropped")
+
+    async def _execute_turn(
+        self,
+        utterance_pcm16: bytes,
+        audio_duration_ms: float,
+        vad_result: Optional[VADResult] = None,
+    ) -> None:
         """
         Executes STT -> Context-Managed LLM Stream -> Sentence-level TTS streaming -> DB persistence.
         """
@@ -290,6 +336,15 @@ class VoiceOrchestrator:
                         await self.stop_listening()
                         return
 
+            # 0b. Pre-STT VAD gate: only drop before STT if very short (<400ms) or peak prob never reached start threshold
+            if vad_result is not None:
+                if vad_result.peak_prob < self.vad.speech_start_threshold:
+                    await self._drop_utterance("low_vad", audio_duration_ms, vad_result)
+                    return
+                if audio_duration_ms < 400.0 and vad_result.speech_ratio < 0.25:
+                    await self._drop_utterance("too_short", audio_duration_ms, vad_result)
+                    return
+
             # 1. Speech-to-Text
             try:
                 stt_result = await self.stt.transcribe(
@@ -309,41 +364,40 @@ class VoiceOrchestrator:
 
             user_text = stt_result.text.strip()
             alnum_count = len(re.sub(r"[^A-Za-z0-9]", "", user_text))
+            words = [w for w in user_text.split() if re.search(r"[A-Za-z0-9]", w)]
             low_logprob = stt_result.avg_logprob is not None and stt_result.avg_logprob <= -1.5
             high_no_speech = stt_result.no_speech_prob is not None and stt_result.no_speech_prob >= 0.8
-            if not user_text or alnum_count < 2 or low_logprob or high_no_speech:
+
+            # Never drop an utterance after STT returns >=2 valid words passing avg_logprob
+            has_valid_multiword = len(words) >= 2 and not low_logprob
+            if not has_valid_multiword and (not user_text or alnum_count < 2 or low_logprob or high_no_speech):
                 if high_no_speech:
                     drop_reason = "no_speech_prob"
                 elif low_logprob:
                     drop_reason = "avg_logprob"
-                elif audio_duration_ms < 200 or (user_text and alnum_count < 2):
+                elif audio_duration_ms < 400.0 or (user_text and alnum_count < 2):
                     drop_reason = "too_short"
                 else:
-                    drop_reason = "low_vad"
+                    drop_reason = "empty_transcript"
 
-                logger.info(
-                    f"VoiceTurn dropped session={self.session_id} reason={drop_reason} "
-                    f"transcript={user_text!r} stt_provider={getattr(stt_result, 'provider', 'unknown')} "
-                    f"stt_avg_logprob={stt_result.avg_logprob} stt_no_speech_prob={stt_result.no_speech_prob} "
-                    f"audio_duration_ms={round(audio_duration_ms, 1)}"
+                await self._drop_utterance(
+                    drop_reason,
+                    audio_duration_ms,
+                    vad_result,
+                    user_text=user_text,
+                    stt_result=stt_result,
                 )
-                await self.send_json({
-                    "type": "utterance_dropped",
-                    "reason": drop_reason,
-                    "audio_duration_ms": round(audio_duration_ms, 1),
-                    "message": "Sorry, I didn't catch that.",
-                })
-                await self.send_json({
-                    "type": "transcript",
-                    "role": "assistant",
-                    "text": "Sorry, I didn't catch that.",
-                    "dropped": True,
-                    "reason": drop_reason,
-                })
-                await self._speak_fallback_line("Sorry, I didn't catch that.")
-                if self._state != VoiceState.IDLE:
-                    await self.transition(VoiceState.LISTENING, reason="utterance_dropped")
                 return
+
+            logger.info(
+                f"VoiceTurn decision=keep session={self.session_id} "
+                f"duration_ms={round(audio_duration_ms, 1)} "
+                f"speech_ratio={getattr(vad_result, 'speech_ratio', None)} "
+                f"peak_prob={getattr(vad_result, 'peak_prob', None)} "
+                f"avg_prob={getattr(vad_result, 'avg_prob', None)} "
+                f"words={len(words)} stt_provider={getattr(stt_result, 'provider', 'unknown')} "
+                f"stt_avg_logprob={stt_result.avg_logprob}"
+            )
 
             await self.send_json({
                 "type": "transcript",

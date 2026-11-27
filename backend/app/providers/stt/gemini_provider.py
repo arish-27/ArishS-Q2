@@ -191,7 +191,13 @@ class GeminiSTTProvider(BaseSTTProvider):
                         f"GeminiSTT non-retryable error status={response.status_code}: {response.text[:200]}"
                     )
                     break
-            except (httpx.TimeoutException, httpx.RequestError) as exc:
+            except httpx.TimeoutException as exc:
+                last_reason = f"{type(exc).__name__}"
+                logger.warning(
+                    f"GeminiSTT timeout={self.timeout_s}s error={last_reason}; falling back immediately"
+                )
+                break
+            except httpx.RequestError as exc:
                 last_reason = f"{type(exc).__name__}"
                 logger.warning(
                     f"GeminiSTT request error={last_reason} attempt={attempt + 1}/{self.max_retries + 1}: {exc}"
