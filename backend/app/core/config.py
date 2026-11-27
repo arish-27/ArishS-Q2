@@ -58,11 +58,11 @@ class Settings(BaseSettings):
     # Speech, STT & TTS Defaults
     DEFAULT_STT_PROVIDER: str = "gemini"
     GEMINI_STT_MODEL: str = "gemini-3.5-flash-lite"
-    GEMINI_STT_TIMEOUT_S: float = 4.0
+    GEMINI_STT_TIMEOUT_S: float = 6.0
     STT_EXTRA_VOCAB: str = "resume, CGPA, ECE, IoT, embedded systems"
     WHISPER_MODEL_SIZE: str = "small"
     WHISPER_ENGLISH_MODEL_SIZE: str = "small.en"
-    WHISPER_BEAM_SIZE: int = 1
+    WHISPER_BEAM_SIZE: int = 3
     WHISPER_CPU_THREADS: int = 0  # 0 = auto-detect os.cpu_count()
     WHISPER_COMPUTE_TYPE: str = "int8"
     WHISPER_DEVICE: str = "cpu"

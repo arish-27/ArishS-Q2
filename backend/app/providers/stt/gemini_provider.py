@@ -68,8 +68,9 @@ class GeminiSTTProvider(BaseSTTProvider):
         lang = (language or "en").strip().lower()
         if lang.startswith("en"):
             prompt = (
-                "Transcribe this audio verbatim. The speaker is speaking English with an Indian accent. "
-                "Return only the transcribed text, nothing else. If there is no speech, return an empty string."
+                "Transcribe this audio verbatim. The speaker is speaking English with an Indian accent "
+                "(pay careful attention to Indian names, cities, and technical terms). "
+                "Return only the exact transcribed text, nothing else. If there is no speech, return an empty string."
             )
         else:
             prompt = (
