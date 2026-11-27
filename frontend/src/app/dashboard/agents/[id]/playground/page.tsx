@@ -120,6 +120,7 @@ export default function VoicePlaygroundPage() {
   const activeStreamMsgIdRef = useRef<string | null>(null);
   const lastUserMsgIdRef = useRef<string | null>(null);
   const transcriptsEndRef = useRef<HTMLDivElement>(null);
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   const pushDebug = useCallback((type: string, summary: string) => {
     const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -141,7 +142,11 @@ export default function VoicePlaygroundPage() {
   }, [agentId]);
 
   useEffect(() => {
-    transcriptsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = transcriptContainerRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
   }, [transcripts]);
 
   const cleanupCall = useCallback(async () => {
@@ -780,7 +785,7 @@ export default function VoicePlaygroundPage() {
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+            <div ref={transcriptContainerRef} className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
               {transcripts.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-2">
                   <Volume2 className="w-10 h-10 text-slate-700" />
@@ -796,7 +801,7 @@ export default function VoicePlaygroundPage() {
                     className={`flex flex-col ${item.role === 'user' ? 'items-end' : 'items-start'}`}
                   >
                     <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                      className={`max-w-[85%] min-w-0 break-words overflow-hidden rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                         item.role === 'user'
                           ? 'bg-emerald-500 text-slate-950 font-medium rounded-br-none'
                           : 'bg-slate-800 text-slate-100 border border-slate-700/60 rounded-bl-none'
@@ -811,7 +816,7 @@ export default function VoicePlaygroundPage() {
                           </span>
                         )}
                       </div>
-                      <p className="whitespace-pre-wrap">{item.text}</p>
+                      <p className="whitespace-pre-wrap break-words">{item.text}</p>
                     </div>
 
                     {item.role === 'assistant' && item.metrics && item.metrics.e2e_latency_ms !== undefined && (
