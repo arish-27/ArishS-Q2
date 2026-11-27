@@ -199,15 +199,17 @@ docker compose exec backend python scripts/seed_demo.py
 | `DEFAULT_GEMINI_MODEL` | Optional | `gemini-3.5-flash-lite` | Primary Gemini model |
 | `DEFAULT_GEMINI_FALLBACK_MODEL` | Optional | `gemini-3.8-flash` | Fallback Gemini model on 503/429/timeout |
 | `LLM_FIRST_TOKEN_TIMEOUT_S` | Optional | `8` | Voice first-token timeout in seconds |
+| `DEFAULT_STT_PROVIDER` | Optional | `gemini` | Default STT provider (`gemini` with `faster-whisper` fallback) |
+| `STT_EXTRA_VOCAB` | Optional | `resume, CGPA, ECE, IoT, embedded systems` | Extra context-biasing vocabulary for STT |
 | `WHISPER_MODEL_SIZE` | Optional | `small` | Non-English `faster-whisper` model size |
 | `WHISPER_ENGLISH_MODEL_SIZE` | Optional | `small.en` | English `faster-whisper` model size |
 | `WHISPER_BEAM_SIZE` | Optional | `1` | Whisper beam size |
 | `WHISPER_CPU_THREADS` | Optional | `0` | `0` auto-detects `os.cpu_count()` |
-| `VAD_SILENCE_THRESHOLD_MS` | Optional | `700` | End-of-turn silence threshold (ms) |
-| `VAD_SPEECH_START_THRESHOLD` | Optional | `0.6` | VAD hysteresis start threshold |
-| `VAD_SPEECH_END_THRESHOLD` | Optional | `0.45` | VAD hysteresis negative/end threshold |
+| `VAD_SILENCE_THRESHOLD_MS` | Optional | `550` | End-of-turn silence threshold (ms) |
+| `VAD_SPEECH_START_THRESHOLD` | Optional | `0.5` | VAD hysteresis start threshold |
+| `VAD_SPEECH_END_THRESHOLD` | Optional | `0.35` | VAD hysteresis negative/end threshold |
 | `VAD_ENERGY_MULTIPLIER` | Optional | `2.0` | Adaptive RMS noise-floor multiplier |
-| `VAD_MIN_SPEECH_MS` | Optional | `200` | Minimum confirmed onset speech (ms) |
+| `VAD_MIN_SPEECH_MS` | Optional | `150` | Minimum confirmed onset speech (ms) |
 | `VAD_MAX_UTTERANCE_S` | Optional | `12` | Hard utterance duration cap (seconds) |
 | `VAD_BARGE_IN_DEBOUNCE_MS` | Optional | `250` | Confirmed speech ms to trigger barge-in |
 | `RAG_EMBEDDING_MODEL` | Optional | `gemini-embedding-001` | Embedding model name |
@@ -252,8 +254,8 @@ docker compose exec backend python scripts/seed_demo.py
 
 ## Testing & Performance (Real Measured Numbers)
 
-- **Pytest inside Docker** (`docker compose exec backend pytest --cov=app --cov-report=term-missing`):
-  - **`44 passed in 18.34s`**, **`65%` total coverage** (`3255` statements, `1155` missed).
+- **Pytest inside Docker** (`docker compose exec backend pytest -q`):
+  - **`49 passed in 11.80s`** (including unit tests for `GeminiSTTProvider` fallback, session vocabulary hint building, and dropped-utterance events).
 - **RAG Evaluation** (`docker compose exec backend python scripts/eval_rag.py`, saved in [results.json](docs/eval/results.json)):
   - **Retrieval Hit Rate (top-4):** `100.0%` (`20/20`)
   - **Keyword Match Accuracy:** `100.0%`
@@ -264,14 +266,19 @@ docker compose exec backend python scripts/seed_demo.py
 - **Load Check** (`docker compose exec backend python scripts/load_check.py`, 10 concurrent text chats):
   - `errors=0`, `wall_ms=1406.3`, `min=524.4 ms`, `avg=745.6 ms`, `p95=1396.3 ms`, `max=1396.3 ms`.
 
-### Voice Pipeline Stage Latency (Container Probes)
+### Voice Pipeline Stage Latency (Container Probes & 5-Turn Run)
 
-| Stage | Before | After | Notes |
-| --- | --- | --- | --- |
-| **STT (2s speech)** | `~2100 ms` (`5196.8 ms` cold `small`) | **`1699.2 ms`** | `small.en` (`int8`, `beam_size=1`, `cpu_threads=12`) on CPU |
-| **LLM TTFT** | `~3500 ms` (`1609.6 ms` cold client) | **`1245.8 ms`** warm (`minimal`) | Persistent keep-alive client; `first_byte == first_token` (network/API bound) |
-| **TTS First Audio** | `812.8 ms` | `1203.3 ms` | Edge-TTS network RTT; pre-warmed on WebSocket connect |
-| **E2E (Sum of Stage Probes)** | `~6800 ms` | **`~4148 ms`** | CPU Whisper + Gemini API network RTT are the main bottlenecks |
+Same-audio STT comparison (3.74s Indian-English clip): `faster-whisper` (`small.en`, CPU `int8`) **`2120.3 ms`** vs `GeminiSTTProvider` (`gemini-3.5-flash-lite`) **`2581.7 ms`**.
+
+5-turn end-to-end pipeline run inside the backend container (`gemini-3.5-flash-lite` STT + LLM with `thinkingLevel=minimal`, `has_knowledge_base=False`, `EdgeTTSProvider`):
+
+| Turn | STT Provider | End-of-Turn Wait | STT (ms) | Retrieval (ms) | LLM TTFT (ms) | TTS First Audio (ms) | E2E (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `gemini` | `550 ms` (config) | `2144.4` | `0.0` | `638.2` | `958.9` | `3743.3` |
+| 2 | `gemini` | `550 ms` (config) | `2351.8` | `0.0` | `568.4` | `1363.5` | `4284.9` |
+| 3 | `gemini` (1 retry) | `550 ms` (config) | `3194.6` | `0.0` | `641.9` | `1125.3` | `8977.3` |
+| 4 | `faster-whisper` (fallback, cold load) | `550 ms` (config) | `12073.0` | `0.0` | `699.6` | `4250.5` | `27858.7` |
+| 5 | `gemini` | `550 ms` (config) | `2443.3` | `0.0` | `629.1` | `800.3` | `4497.9` |
 
 ---
 
@@ -290,7 +297,7 @@ docker compose exec backend python scripts/seed_demo.py
 - **Test DB Isolation:** In Docker, HTTP/WebSocket tests run against PostgreSQL 16 + pgvector, while `test_rag_retrieval_ranking_with_fake_embeddings` uses an isolated in-memory SQLite engine to avoid `asyncpg` cross-loop pool contention.
 - **Mock Tools:** Built-in `get_weather`, `book_appointment`, and `send_email` return mock payloads rather than integrating external calendar/SMTP providers.
 - **Telephony:** Browser WebSocket audio is implemented; PSTN/SIP telephony (Twilio/LiveKit) is not implemented.
-- **CPU STT & Cloud API Latency:** Without a GPU, `faster-whisper` `small.en` takes ~1.7s for 2s audio, and Gemini Free Tier network RTT + 15 RPM limits add ~1.1s–2.1s+ TTFT variance.
+- **Cloud STT Privacy & Rate Limits:** `GeminiSTTProvider` (default) sends WAV audio to Google's Gemini API (`gemini-3.5-flash-lite`) for transcription. The Gemini Free Tier has rate limits (RPM/RPD); on 429, 5xx, missing key, or 4s timeout, the pipeline automatically falls back to local `faster-whisper` (`small.en` on CPU, ~1.7s–2.1s per utterance).
 
 ---
 
