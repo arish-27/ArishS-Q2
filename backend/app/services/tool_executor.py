@@ -4,6 +4,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -25,11 +26,11 @@ class SSRFBlockedError(Exception):
 BUILTIN_TOOL_PRESETS: Dict[str, Dict[str, Any]] = {
     "get_current_time": {
         "name": "get_current_time",
-        "description": "Returns the current UTC date and time (or requested timezone label).",
+        "description": "Returns the current date and time in the requested timezone (defaults to Asia/Kolkata / IST).",
         "parameters_schema": json.dumps({
             "type": "object",
             "properties": {
-                "timezone": {"type": "string", "description": "Optional timezone name, e.g. UTC or IST"}
+                "timezone": {"type": "string", "description": "Optional timezone name, e.g. IST, Asia/Kolkata, UTC, America/New_York"}
             },
             "required": [],
         }),
@@ -189,14 +190,37 @@ def validate_tool_arguments(schema_str: str, arguments: Any) -> Dict[str, Any]:
     return arguments
 
 
+_TZ_ALIASES = {
+    "IST": "Asia/Kolkata",
+    "UTC": "UTC",
+    "GMT": "GMT",
+    "EST": "America/New_York",
+    "EDT": "America/New_York",
+    "PST": "America/Los_Angeles",
+    "PDT": "America/Los_Angeles",
+    "CST": "America/Chicago",
+    "JST": "Asia/Tokyo",
+    "SGT": "Asia/Singapore",
+    "BST": "Europe/London",
+    "CET": "Europe/Berlin",
+}
+
+
 def _execute_builtin(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "get_current_time":
-        tz_label = args.get("timezone") or "UTC"
-        now_utc = datetime.now(timezone.utc)
+        raw_tz = (args.get("timezone") or "IST").strip()
+        iana_name = _TZ_ALIASES.get(raw_tz.upper(), raw_tz)
+        try:
+            tz = ZoneInfo(iana_name)
+            tz_label = raw_tz
+        except Exception:
+            tz = ZoneInfo("Asia/Kolkata")
+            tz_label = "IST"
+        now_local = datetime.now(tz)
         return {
             "timezone": tz_label,
-            "iso": now_utc.isoformat(),
-            "formatted": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "iso": now_local.isoformat(),
+            "formatted": now_local.strftime(f"%Y-%m-%d %H:%M:%S {tz_label}"),
         }
     if name == "get_weather":
         loc = args.get("location", "Unknown")
