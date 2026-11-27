@@ -64,3 +64,4 @@ uploads/
 *.log
 scratch/
 tmp/
+.coverage

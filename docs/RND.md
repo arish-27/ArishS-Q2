@@ -1,274 +1,102 @@
 # Research & Development (R&D) Specification
-## AI Voice Agent Development & Deployment Platform (Dograh-Alternative)
+## AI Voice Agent Development & Deployment Platform
 
 ---
 
-## 1. Executive Summary & Problem Statement
+## 1. Problem Statement and Objectives
 
-Building production-grade real-time AI voice agents requires solving extreme latency constraints, bi-directional audio streaming, natural conversational turn-taking, barge-in (interruption) handling, context window preservation, and safe tool execution.
+Building real-time conversational AI voice agents requires orchestrating low-latency duplex audio streaming, voice activity detection (VAD), speech-to-text (STT), context-managed LLM inference, sentence-level text-to-speech (TTS), retrieval-augmented generation (RAG), and safe tool execution.
 
-While managed proprietary platforms like **Vapi**, **Retell AI**, and **Bland AI** provide black-box APIs, organizations face significant drawbacks:
-- **Vendor Lock-in & Skyrocketing Costs**: Closed SaaS voice platforms charge \$0.05 to \$0.15+ per minute of conversation on top of raw model inference.
-- **Data Privacy & Compliance**: Audio streams, customer transcripts, and proprietary knowledge base data traverse untrusted third-party infrastructure.
-- **Rigid Pipeline Customization**: Inability to swap in-house STT (e.g. self-hosted Whisper/faster-whisper), fine-tuned open-source LLMs, custom local TTS (Piper/Edge-TTS), or integrate on-premise vector stores (PostgreSQL pgvector).
-
-This platform provides an **open-source, self-hosted, modular voice agent engineering stack** matching the capabilities of **Dograh**, providing:
-1. Low-latency full-duplex WebSocket audio streaming between web browsers and backend.
-2. In-house pipeline: **Server-side VAD (Silero) -> Local STT (faster-whisper) -> Streaming LLM (Gemini / OpenAI) -> Sentence-Chunked Streaming TTS (Edge-TTS / Piper)**.
-3. Natural barge-in: instant audio cancellation and LLM generation halting when the user speaks over the agent.
-4. Integrated RAG pipeline using PostgreSQL and `pgvector` for domain-specific grounding.
-5. Secure function calling framework with explicit human-in-the-loop validation for sensitive tools.
-6. Public shareable agent deployment links (`/a/{slug}`) with real-time analytics.
+Managed proprietary platforms (Vapi, Retell AI, Bland AI) abstract this pipeline behind closed APIs, creating vendor lock-in, higher per-minute costs, and third-party data exposure. The objective of this project is to build a **self-hosted, modular, open-architecture voice agent platform** (comparable to Dograh) with:
+1. Full-duplex 16kHz PCM16 WebSocket audio streaming between browser and FastAPI.
+2. In-house **Silero/WebRTC VAD -> faster-whisper STT -> Gemini/OpenAI LLM -> Edge-TTS** pipeline with debounced barge-in.
+3. PostgreSQL `pgvector` RAG grounding (`gemini-embedding-001`, 768-dim HNSW).
+4. JSON-schema function calling with SSRF-protected webhooks and human-in-the-loop confirmation for sensitive actions.
+5. Public shareable agent links (`/a/{slug}`) and turn-level latency/error analytics.
 
 ---
 
-## 2. Competitor Analysis
+## 2. Existing Platforms and Competitor Analysis
 
-| Feature / Metric | **Dograh** | **Vapi** | **Retell AI** | **Bland AI** | **Our Platform** |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Hosting Model** | Open/Self-hostable & Cloud | Proprietary SaaS | Proprietary SaaS | Proprietary SaaS | **100% Self-Hosted & Containerized** |
-| **Pipeline Control** | Modular, code-level | Pre-packaged pipelines | Black-box orchestration | Black-box phone focus | **Full Open Architecture (STT-LLM-TTS)** |
-| **STT Engine** | Whisper / Deepgram | Deepgram / AssemblyAI | Deepgram / Whisper | Custom internal | **Local faster-whisper + Provider Interface** |
-| **TTS Engine** | Edge-TTS / ElevenLabs | ElevenLabs / PlayHT / Azure | ElevenLabs / Cartesia | Internal voice models | **Edge-TTS (Free) / Piper / ElevenLabs / OpenAI** |
-| **VAD & Turn-Taking** | Silero VAD + Speech gating | Proprietary server VAD | Custom turn-detection | Telephony silence detector | **Silero VAD + Dynamic Silence Buffer** |
-| **Barge-in Latency** | ~200ms | ~250ms | ~200ms | ~400ms | **<150ms WebSocket Interruption Signal** |
-| **RAG Knowledge Base** | Vector DB | Limited file upload | Document injection | Knowledge base add-on | **PostgreSQL + pgvector (Cosine Similarity)** |
-| **Function Calling** | Webhooks & Tools | JSON Tools | Custom tools | Webhooks | **JSON-Schema Tools + Sensitive Confirmation Gate** |
-| **Secrets Security** | Environment vars | Dashboard stored | Dashboard stored | Dashboard stored | **AES-256 Fernet DB Encryption (Per-User)** |
-| **Cost per Minute** | Compute only (~$0.005) | ~$0.08 - $0.12/min | ~$0.07 - $0.10/min | ~$0.09 - $0.15/min | **Compute only ($0 for local STT/Edge-TTS)** |
+| Dimension | Dograh | Vapi | Retell AI | Bland AI | This Project |
+| --- | --- | --- | --- | --- | --- |
+| **Approach** | Open/modular voice agent framework | Managed SaaS voice orchestration | Managed SaaS low-latency voice | Managed SaaS AI phone calls | **Self-hosted Dockerized FastAPI + Next.js** |
+| **Strengths** | Open architecture, customizable | Rich integrations, quick setup | Polished turn-taking & telephony | High-concurrency outbound calls | **Zero vendor lock-in, full code control, Fernet vault, pgvector RAG** |
+| **Weaknesses** | Self-managed infra | Per-minute markup, closed core | Proprietary pipeline, vendor lock-in | Opaque internals, telephony-centric | **CPU STT latency (~1.7s), no PSTN/WebRTC yet** |
+| **How This Project Differs** | Similar modular philosophy | Replaces black-box orchestration with inspectable Python state machine | Replaces SaaS VAD/TTS with local Silero-ONNX + Edge-TTS | Focuses on browser WebSocket studio, RAG, and sensitive tool gates | **Inspectable pipeline metrics, HNSW RAG, and per-user encrypted vault** |
 
 ---
 
-## 3. Technology Research & Evaluation
+## 3. Technical Research on STT, TTS, LLMs, and Real-Time Communication
 
-### 3.1 Speech-to-Text (STT)
-- **faster-whisper (CTranslate2)**: Up to 4x faster than vanilla OpenAI Whisper with significantly reduced memory footprint through 8-bit quantization. Operates locally on CPU or GPU without external cloud latency.
-- **Deepgram Nova-2 (Cloud Alternative)**: Benchmark cloud streaming STT with ~250ms latency. Configured through our extensible `STTProvider` interface.
-
-### 3.2 Large Language Models (LLM) & Context Management
-- **Google Gemini (2.5 / 1.5 Pro & Flash)**: Sub-second first-token latency with massive context windows and low cost.
-- **OpenAI (GPT-4o & GPT-4o-mini)**: Industry standard function calling and deterministic JSON-schema outputs.
-- **Context Window Management**: To avoid conversation bloat and latency degradation during prolonged calls, the turn manager enforces a sliding context window of $N$ recent turns, combined with background rolling summarization for historical turns.
-
-### 3.3 Text-to-Speech (TTS)
-- **Edge-TTS**: High-fidelity neural voice synthesis with zero API cost and multi-language support.
-- **Piper**: Extremely fast local neural TTS running on CPU (<50ms generation time per sentence chunk).
-- **ElevenLabs / OpenAI TTS**: Ultra-realistic expressive voices available via provider configuration for production tier agents.
-
-### 3.4 Transport Protocol: WebSockets vs. WebRTC
-- **WebSockets**: Selected for our primary duplex channel. While WebRTC avoids TCP retransmissions, WebSockets over TLS provide lower complexity, seamless integration with HTTP reverse proxies (Nginx/Traefik), simple frame multiplexing (audio binary chunks + JSON control frames), and zero NAT/STUN/TURN traversal overhead in web applications.
-- Audio chunks are encoded as 16kHz 16-bit mono PCM or Opus frames, packed in lightweight binary payloads.
+- **WebSocket vs. WebRTC:** WebSocket (`/api/v1/voice/stream/{agent_id}` and `/api/v1/voice/public/{slug}`) was chosen over WebRTC because it multiplexes binary 16kHz PCM16 / MP3 frames and JSON control events (`state`, `vad_prob`, `tool_confirm`, `rag_sources`, `interrupt`) over a single TLS/HTTP-compatible connection without ICE/STUN/TURN infrastructure. WebRTC remains a future upgrade for jitter-resilient UDP transport.
+- **VAD Options:** `silero-onnx` (bundled via `faster-whisper`, zero PyTorch dependency) was selected as the primary VAD with `webrtcvad` as automatic fallback. Hysteresis (`0.6` start / `0.45` end), 200ms onset confirmation, adaptive RMS energy gating (`2.0x` noise floor), and a 12s hard cap prevent background noise from keeping turns open.
+- **Whisper Model Sizes:** `base` had noticeable word-error rate on Indian English accents; upgrading to `small.en` (`int8`, CPU, `beam_size=1`, `cpu_threads=12`) improved English recognition while running in `1699.2 ms` for a 2s synthetic speech utterance.
+- **Edge-TTS vs. Alternatives:** `edge-tts` provides free neural streaming MP3 synthesis (`~812.8–1203.3 ms` first audio in container probes). Local Piper or paid ElevenLabs/OpenAI TTS can be plugged into `BaseTTSProvider` for lower RTT or higher expressiveness.
 
 ---
 
-## 4. System Architecture & Turn-Taking Pipeline
+## 4. System Architecture and Component Design
 
-```
-+--------------------------------------------------------------------------------------------------+
-|                                        BROWSER CLIENT                                            |
-|  AudioWorklet (16kHz PCM)  <====== WebSocket Duplex (Audio + JSON Control) ======> Web Audio Player |
-+---------------------------------------------------|----------------------------------------------+
-                                                    |
-                                                    v
-+--------------------------------------------------------------------------------------------------+
-|                                    BACKEND VOICE ORCHESTRATOR                                    |
-|                                                                                                  |
-|  1. Audio Ingestion & Frame Ring Buffer (512 samples / 32ms frames)                              |
-|  2. Silero VAD (Voice Activity Detection): Speech Probability Gate (threshold: 0.5)              |
-|     - Speech Start Detected -> If Agent is Speaking: Emit INTERRUPT, Flush TTS Audio Buffer       |
-|     - Speech Continuation   -> Accumulate Speech Audio Chunks                                    |
-|     - Silence (>600ms)      -> Speech End Triggered -> Dispatch to STT Buffer                    |
-|                                                                                                  |
-|  3. STT Engine (faster-whisper / Deepgram):                                                      |
-|     - Transcribes buffered user speech to text                                                   |
-|     - Emits `transcript_user` event to WebSocket (latency tracked: T_stt)                         |
-|                                                                                                  |
-|  4. Grounding & RAG Retrieval:                                                                   |
-|     - Query embedding generated -> pgvector cosine search (<=>) on agent's documents             |
-|     - Top-k chunk injection into prompt context                                                  |
-|                                                                                                  |
-|  5. LLM Engine (Gemini / OpenAI Streaming):                                                      |
-|     - System prompt + RAG Context + Trimmed History + Available Tools                            |
-|     - Streaming token generation -> Emits `llm_first_token` (latency tracked: T_llm_first)       |
-|     - Tool call detected -> If sensitive: pause & request user confirmation; else execute        |
-|                                                                                                  |
-|  6. Sentence Boundary Chunking & TTS Engine:                                                     |
-|     - Text stream chunked by sentence delimiters ([.!?:;\n])                                     |
-|     - Streamed to TTS provider (Edge-TTS / Piper) -> First audio packet emitted (T_tts_first)    |
-|     - Audio chunks streamed to browser as binary frames                                          |
-+--------------------------------------------------------------------------------------------------+
-```
+- **Frontend (`frontend/`):** Next.js 14 App Router (`next build` + `next start`) with an `AudioWorklet` (`/worklets/pcm16-processor.js`) capturing mono 16kHz PCM16 frames, `GaplessAudioPlayer` (`audioQueue.ts`) for queued MP3 playback with instant flush on `interrupt`/`audio_stop`, and a real-time Pipeline Inspector.
+- **VoiceOrchestrator (`backend/app/services/voice_orchestrator.py`):** Explicit state machine (`IDLE`, `LISTENING`, `THINKING`, `SPEAKING`) enforcing valid transitions under an `asyncio.Lock`. Coordinates VAD -> STT -> RAG -> LLM/Tools -> `StreamingSentenceSplitter` (sentence boundaries + commas after 8 words) -> TTS -> PostgreSQL persistence.
 
 ---
 
-## 5. Database Schema Design (PostgreSQL + pgvector)
+## 5. Database Schema and API Architecture
 
-```mermaid
-erDiagram
-    USERS ||--o{ AGENTS : owns
-    USERS ||--o{ USER_API_KEYS : stores
-    USERS ||--o{ DOCUMENTS : uploads
-    USERS ||--o{ TOOLS : creates
-    AGENTS ||--o{ AGENT_TOOLS : associates
-    TOOLS ||--o{ AGENT_TOOLS : assigned
-    AGENTS ||--o{ DOCUMENTS : references
-    DOCUMENTS ||--o{ DOCUMENT_CHUNKS : splits
-    AGENTS ||--o{ CALL_SESSIONS : records
-    CALL_SESSIONS ||--o{ CONVERSATION_MESSAGES : contains
-
-    USERS {
-        uuid id PK
-        string email UK
-        string hashed_password
-        string full_name
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    AGENTS {
-        uuid id PK
-        uuid user_id FK
-        string name
-        string slug UK
-        string description
-        string personality
-        text system_prompt
-        string llm_provider
-        string llm_model
-        float temperature
-        string stt_provider
-        string stt_language
-        string tts_provider
-        string tts_voice
-        boolean is_published
-        boolean is_active
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    USER_API_KEYS {
-        uuid id PK
-        uuid user_id FK
-        string provider
-        string encrypted_key
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    DOCUMENTS {
-        uuid id PK
-        uuid user_id FK
-        uuid agent_id FK
-        string filename
-        string file_type
-        int file_size
-        string status
-        timestamp created_at
-    }
-
-    DOCUMENT_CHUNKS {
-        uuid id PK
-        uuid document_id FK
-        uuid agent_id FK
-        int chunk_index
-        text content
-        vector embedding
-        jsonb metadata
-        timestamp created_at
-    }
-
-    TOOLS {
-        uuid id PK
-        uuid user_id FK
-        string name
-        string description
-        jsonb parameters_schema
-        boolean is_sensitive
-        string execution_type
-        string webhook_url
-        timestamp created_at
-    }
-
-    AGENT_TOOLS {
-        uuid agent_id PK,FK
-        uuid tool_id PK,FK
-    }
-
-    CALL_SESSIONS {
-        uuid id PK
-        uuid agent_id FK
-        uuid user_id FK
-        string session_token UK
-        timestamp started_at
-        timestamp ended_at
-        int duration_seconds
-        string status
-        int total_turns
-        float avg_latency_ms
-        timestamp created_at
-    }
-
-    CONVERSATION_MESSAGES {
-        uuid id PK
-        uuid session_id FK
-        string role
-        text content
-        int audio_duration_ms
-        float stt_latency_ms
-        float llm_latency_ms
-        float tts_latency_ms
-        jsonb tool_calls
-        jsonb tool_results
-        jsonb rag_sources
-        timestamp created_at
-    }
-```
+- **Models (`backend/app/models/`):**
+  - `users`: authentication credentials (`bcrypt`).
+  - `user_api_keys`: per-user Fernet-encrypted provider keys.
+  - `agents`: prompt, model, voice, language, `is_published`, `slug`, many-to-many `agent_tools`.
+  - `documents` & `document_chunks`: `UniversalVector(768)` column with PostgreSQL HNSW cosine index (`ix_document_chunks_embedding_hnsw`).
+  - `tools`: JSON schema, `execution_type` (`mock`/`webhook`/`built_in`), webhook config, `is_sensitive`.
+  - `call_sessions` & `conversation_messages`: `user_id` (nullable for public calls), `error_count`, `last_error`, per-stage latencies, `rag_sources_json`, `tool_calls_json`, `tool_results_json`, `interrupted`.
+- **Routers (`backend/app/api/v1/`):** `/auth`, `/agents`, `/chat`, `/voice`, `/knowledge`, `/tools`, `/analytics`, `/health`.
 
 ---
 
-## 6. Security & Encryption Model
+## 6. AI Model and Provider Selection with Justification
 
-1. **At-Rest API Key Vault**:
-   - User-supplied API keys (OpenAI, Gemini, Deepgram, ElevenLabs) are encrypted using **Fernet symmetric encryption (AES-128-CBC with HMAC-SHA256)** derived from an uncommitted master key (`ENCRYPTION_SECRET_KEY`).
-   - Keys are decrypted only in memory when initializing provider instances for an active session. Raw keys are never sent to the browser.
-2. **Authentication & Tenant Isolation**:
-   - Access tokens are JWTs signed with `HS256` and strict expiration (`ACCESS_TOKEN_EXPIRE_MINUTES`).
-   - Every database query for agents, knowledge documents, tools, and analytics is hard-filtered by `user_id = current_user.id`.
-3. **Public Shareable Agent Gatekeeper**:
-   - Agents accessed via `/a/{slug}` require `is_published == True` and `is_active == True`.
-   - Redis token bucket rate limiting prevents abuse, denial-of-service, or inference cost attacks.
+- **Primary LLM (`gemini-3.5-flash-lite`) & Fallback (`gemini-3.8-flash`):** Selected for low cost/latency and native function calling. Using `scripts/profile_gemini_stream.py` inside `voiceagent_backend`, we proved:
+  - `first_byte_ms == first_token_ms` (`1245.7 ms` vs `1245.8 ms` warm; `1609.6 ms` cold; `1135.7 ms` without `thinkingConfig`), confirming Gemini API/network RTT—not SSE parsing—dominates TTFT.
+  - `thinkingBudget: 0` and `thinkingLevel: "none"` both return `HTTP 400` on `gemini-3.5-flash-lite`; `thinkingLevel: "minimal"` is the lowest valid setting and returns `HTTP 200`.
+  - Persistent `httpx.AsyncClient` keep-alive + `maxOutputTokens: 150` + WebSocket-connect pre-warm eliminate cold TLS overhead.
+  - Retries (`1` on `8s` first-token timeout, `2` exponential-backoff retries on `503/429`) + fallback to `gemini-3.8-flash` + spoken TTS fallback (`"Sorry, I had trouble. Could you repeat that?"`) prevent silent failures.
+- **Embeddings (`gemini-embedding-001` @ 768-dim):** Replaces deprecated `text-embedding-004` via MRL `outputDimensionality=768` with unit L2 normalization.
 
 ---
 
-## 7. Turn-Taking, Barge-in, and Latency Optimization
+## 7. Implementation Approach and Challenges Actually Faced
 
-### 7.1 Latency Budget Target
-| Pipeline Stage | Acceptable | Target | Realized (Local/Free) | Realized (Cloud Fast) |
-| :--- | :--- | :--- | :--- | :--- |
-| VAD Silence Detection | 800ms | 400 - 500ms | 500ms | 400ms |
-| Speech-to-Text (STT) | 500ms | 150 - 250ms | 200ms (faster-whisper) | 180ms (Deepgram) |
-| LLM Time to First Token | 600ms | 250 - 350ms | 300ms (Gemini Flash) | 320ms (GPT-4o-mini) |
-| TTS First Audio Packet | 400ms | 100 - 200ms | 120ms (Edge-TTS) | 90ms (Piper) |
-| **Total Turnaround Time** | **2.3s** | **~1.1s** | **~1.12s** | **~0.99s** |
-
-### 7.2 Barge-In (Interruption) Mechanics
-1. When the agent is speaking, TTS audio is streamed in indexed chunks (e.g. `seq=1, 2, ...`).
-2. The user starts speaking. The server-side VAD detects speech probability $> 0.5$ continuously for $\ge 64\text{ms}$.
-3. The server immediately sends an `interrupt` control event to the client over WebSocket with the current sequence number.
-4. The client's Web Audio player immediately stops playback and clears its audio buffer.
-5. The backend cancels any pending TTS synthesis tasks and LLM generation streams for that turn, transitioning the agent state from `SPEAKING` to `LISTENING`.
+1. **AudioWorklet Serving:** Next.js dev/prod asset serving needed verification that `/worklets/pcm16-processor.js` returned `200 OK` with `application/javascript` rather than 404 HTML.
+2. **Gemini 503/429 & Thinking Config:** Free-tier 15 RPM limits and transient 503s caused silent hangs until `LLM_FIRST_TOKEN_TIMEOUT_S=8`, retry/fallback, and `thinkingLevel: "minimal"` (discovered via live API probing after `thinkingBudget: 0` returned 400) were added.
+3. **STT Accuracy & CPU Contention:** Upgraded `base` -> `small.en`, added `avg_logprob` / `no_speech_prob` filtering, and tuned `cpu_threads=12` (`1699.2 ms` vs `2423.0 ms` at 6 threads).
+4. **VAD Noise Hysteresis:** Single-threshold VAD stayed stuck in `SPEAKING`/`LISTENING` under background noise; fixed with `0.60/0.45` hysteresis, 200ms onset confirmation, adaptive RMS noise floor, and 12s hard cap.
+5. **Barge-in Debounce:** Added 250ms confirmed-speech debounce so echo/clicks do not cancel TTS, while preserving the onset audio buffer for the interrupting utterance.
+6. **SQLite vs. PostgreSQL Vector Type:** `UniversalVector(768)` maps to `pgvector.Vector(768)` on PostgreSQL and JSON `Text` on SQLite so unit tests run cleanly without Postgres, while Docker tests hit real Postgres (`test_rag_retrieval_ranking_with_fake_embeddings` uses an isolated in-memory SQLite engine to avoid `asyncpg` cross-loop pool errors).
 
 ---
 
-## 8. Testing Methodology & Verification Plan
+## 8. Testing Methodology and AI Evaluation
 
-1. **Unit & API Testing**:
-   - Pytest test suites covering Auth, Agent CRUD, RAG document parsing & embedding, Tool execution, and WebSocket control frames.
-2. **AI & RAG Evaluation Script**:
-   - Synthetic benchmark containing 20 curated domain Q&A pairs.
-   - Evaluates:
-     - **Retrieval Hit Rate**: Top-k retrieval recall of ground-truth chunks.
-     - **Answer Correctness**: Semantic correctness of generated answers against reference answers.
-     - **End-to-End Latency**: Measurement across turns.
-3. **Load & Stress Testing**:
-   - Concurrent WebSocket audio stream simulation.
+- **Automated Suite (`docker compose exec backend pytest --cov=app`):** `44 passed in 18.34s`, `65%` coverage across auth, vault, agents, chat streaming, VAD, barge-in, RAG, tools/SSRF, public agents, and analytics.
+- **RAG Evaluation (`scripts/eval_rag.py` on 20 in-knowledge + 5 out-of-knowledge Qs):** `100.0%` top-4 retrieval hit rate, `100.0%` keyword match accuracy, `1.000 / 1.0` Gemini LLM-as-judge average, `100.0%` out-of-knowledge abstention; `1199.5 ms` avg retrieval, `1238.0 ms` avg LLM TTFT.
+- **Load Check (`scripts/load_check.py`):** 10 concurrent text chats completed with `0` errors (`avg=745.6 ms`, `p95=1396.3 ms`).
+
+---
+
+## 9. Security, Scalability, and Optimization
+
+- **Implemented:** Fernet AES-256 vault, HS256 JWT, strict `user_id` isolation, Redis per-user/per-IP rate limiting, post-DNS SSRF blocking, sensitive tool confirmation gate, and startup validation rejecting missing/placeholder secrets.
+- **Next Steps for Scale:** Stateless backend workers behind sticky WebSocket load balancing, Redis Pub/Sub for distributed session state, dedicated GPU STT workers (or Deepgram streaming STT) to cut STT from `~1.7s` to `<300ms` (estimate), and asynchronous background queues (Celery/ARQ) for large document ingestion.
+
+---
+
+## 10. Future Improvements
+
+- **Telephony Integration:** SIP/PSTN bridge (Twilio Media Streams or LiveKit) for inbound/outbound phone calls.
+- **WebRTC Transport:** Optional WebRTC data/audio tracks for lossy mobile networks.
+- **Streaming STT:** Token-by-token incremental STT (e.g., Deepgram Nova or Whisper streaming) to overlap transcription with speech.
+- **Multi-Language Auto-Detection:** Dynamic language switching across STT, LLM, and TTS voices.
+- **CI Evals:** Run `eval_rag.py` and `pytest --cov` automatically on pull requests with regression thresholds.
